@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resizeBay, rotateBay, shiftBays, tuneBays } from "./bayfine";
+import { resizeBay, rotateBay, shiftBays, splitBay, tuneBays } from "./bayfine";
 import type { DrawnSlot, Pt } from "./slotdraw";
 
 const W = 1600;
@@ -54,5 +54,44 @@ describe("fine adjustment of bays", () => {
     expect(out[0]).toBe(all[0]);
     expect([out[1].id, out[1].name]).toEqual([2, "A2"]);
     expect(out[1].poly).not.toEqual(all[1].poly);
+  });
+});
+
+describe("splitBay", () => {
+  const ground = (poly: Pt[]) => poly; // (the bay below is a perspective quad: its far side is narrower)
+  const quad: Pt[] = [[0.3, 0.8], [0.5, 0.8], [0.46, 0.4], [0.34, 0.4]];
+
+  it("cuts a bay into two that tile it exactly, in the bay's own order, with no gap or overlap", () => {
+    const [a, b] = splitBay(quad, "width");
+    expect(a[1]).toEqual(b[0]); // they share the cut
+    expect(a[2]).toEqual(b[3]);
+    expect(a[0]).toEqual(quad[0]);
+    expect(b[1]).toEqual(quad[1]);
+    expect(b[2]).toEqual(quad[2]);
+    const [f, k] = splitBay(quad, "length");
+    expect(f[3]).toEqual(k[0]);
+    expect(f[2]).toEqual(k[1]);
+    expect(f[0]).toEqual(quad[0]);
+    expect(k[3]).toEqual(quad[3]);
+  });
+
+  it("cuts equal on the ground, not on the picture: the near half looks longer than the far half", () => {
+    const [near, far] = splitBay(quad, "length");
+    const side = (p: Pt[]) => Math.hypot(p[3][0] - p[0][0], p[3][1] - p[0][1]); // the left side of each half
+    expect(side(near)).toBeGreaterThan(side(far));
+    const mid = near[3][1];
+    expect(mid).toBeLessThan(0.6); // the picture's midpoint of the sides is at y 0.6: the ground's is farther
+    const [l, r] = splitBay(quad, "width");
+    expect(Math.hypot(l[1][0] - l[0][0], l[1][1] - l[0][1])).toBeCloseTo(Math.hypot(r[1][0] - r[0][0], r[1][1] - r[0][1]), 3); // a front edge halves evenly
+  });
+
+  it("a plain rectangle splits in half, thirds work, and a bay that is not four-cornered is left alone", () => {
+    const rect: Pt[] = [[0.2, 0.6], [0.4, 0.6], [0.4, 0.2], [0.2, 0.2]];
+    const [a, b] = splitBay(rect, "width");
+    expect(a[1][0]).toBeCloseTo(0.3, 4);
+    expect(b[0][0]).toBeCloseTo(0.3, 4);
+    expect(splitBay(rect, "length", 3)).toHaveLength(3);
+    expect(splitBay([[0, 0], [1, 0], [1, 1]], "width")).toHaveLength(1);
+    expect(ground(quad)).toBe(quad);
   });
 });

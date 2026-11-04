@@ -95,7 +95,7 @@ class Reference(BaseModel):
 
 
 class CalibrateIn(BaseModel):
-    method: str = Field(pattern="^(rectangle|geocalib)$")
+    method: str = Field(pattern="^(rectangle|geocalib|topdown)$")
     polygon: list[list[float]] = Field(min_length=3, max_length=200)  # the parking surface, fractions
     pins: list[list[float]] | None = Field(None, min_length=4, max_length=4)
     sides: list[float] | None = Field(None, min_length=2, max_length=2)
@@ -107,7 +107,7 @@ class CalibrateIn(BaseModel):
     zone: int | None = Field(None, ge=1, le=MAX_ZONES)  # calibrate one zone: GeoCalib on its surface alone, its own grid; the auto grid is left as it is
     zone_name: str = Field("", max_length=40)
     bound: list[list[float]] | None = Field(None, min_length=3, max_length=200)  # the zone's drawn outline: its cars and its row direction (default: polygon)
-    rows: int = Field(1, ge=1, le=6)  # rows of bays in a zone, from its front edge (a zone is one row by default)
+    rows: int = Field(1, ge=0, le=6)  # rows of bays in a zone, from its front edge (1 by default; 0 = automatic: the zone's depth over a bay's length)
 
 
 class SlotsIn(BaseModel):
@@ -381,8 +381,8 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
         s = session_of(sid)
         if body.method == "rectangle" and (body.pins is None or body.sides is None):
             raise HTTPException(422, "the rectangle method needs `pins` (4 corners) and `sides` (metres of side 1 and side 2)")
-        if body.method == "geocalib" and body.reference is None:
-            raise HTTPException(422, "the GeoCalib method needs `reference` (two ground points and the metres between them)")
+        if body.method in ("geocalib", "topdown") and body.reference is None:
+            raise HTTPException(422, f"the {'GeoCalib' if body.method == 'geocalib' else 'top-down'} method needs `reference` (two ground points and the metres between them)")
         if (running := jobs.running("sample", sid)) is not None:
             raise HTTPException(409, f"a job is already running for this session (job {running['id']})")
         tn = tuned(s, body.tune)
@@ -401,6 +401,12 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                     report("solving the pins", 0.5)
                     rec = await asyncio.to_thread(ss.rectangle_record, s["frame"], raw, pins=body.pins, sides=body.sides, polygon=body.polygon, bay=bay,
                                                   meta={"method": "rectangle"}, row_outline=row)
+                elif body.method == "topdown":  # a picture looking straight down: no GeoCalib, the typed reference is the whole scale
+                    if body.reference is None:
+                        raise ValueError("top-down needs two clicked ground points and the distance between them")
+                    report("measuring the top-down scale", 0.5)
+                    rec = await asyncio.to_thread(ss.topdown_record, s["frame"], raw, reference=body.reference.model_dump(), polygon=body.polygon, bay=bay,
+                                                  meta={"method": "topdown"}, row_outline=row)
                 else:
                     report("models: GeoCalib + depth", 0.3)
                     mask = np.zeros((s["h"], s["w"]), np.uint8)
@@ -412,7 +418,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                                                   reference=body.reference.model_dump(), polygon=body.polygon, bay=bay, meta={"method": "geocalib"},
                                                   row_outline=row)
                 if body.zone is not None:  # a zone's bays follow its outline (direction, length, rows), not the car-anchored lattice of the whole picture
-                    ref = body.reference.model_dump() if body.method == "geocalib" else {"a": body.pins[0], "b": body.pins[1], "metres": body.sides[0]}
+                    ref = body.reference.model_dump() if body.method in ("geocalib", "topdown") else {"a": body.pins[0], "b": body.pins[1], "metres": body.sides[0]}
                     slots, sizing = await asyncio.to_thread(ss.row_grid, rec, outline, s["w"], s["h"], bay, body.rows,
                                                             [tuple(d["box"]) for d in raw if d.get("state") is not None], ref)
                 else:
@@ -435,7 +441,10 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                 s.update(record=rec, slots=slots, polygon=body.polygon, layout="auto", calibration=note)
                 return {**s["calibration"], "slots": slots, "finished": clock()}
             except ss.SessionError as e:
-                raise ValueError(str(e)) from None
+                msg = str(e)
+                if body.method == "geocalib" and "too level for ground" in msg:  # GeoCalib read an overhead picture as nearly level: say what to do
+                    msg += "; for an aerial / drone picture looking straight down choose the Top-down scale method"
+                raise ValueError(msg) from None
             finally:
                 busy.release()
 

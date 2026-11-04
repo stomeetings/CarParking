@@ -688,6 +688,95 @@ describe("zones: add next bays and edit them", () => {
     const order = net.calls.filter((c) => /zones\/1\/slots$|\/run$/.test(c.url)).map((c) => c.url.split("/").pop());
     expect(order).toEqual(["slots", "run"]);
   });
+
+  it("splits the selected bay into two (left | right or front / back), the second with the zone's next free id, saved before the run", async () => {
+    const net = await ready(serve());
+    expect((screen.getByTestId("zone-split-width") as HTMLButtonElement).disabled).toBe(true); // nothing selected
+    fireEvent.click(screen.getAllByTestId("zone-bay-edit")[0]);
+    fireEvent.click(screen.getByTestId("zone-split-width"));
+    expect(screen.getAllByTestId("zone-bay-row").map((r) => r.textContent?.split(" ·")[0])).toEqual(["A1a", "A1b", "A2"].map((n) => n)); // A1 became two, next to each other
+    fireEvent.click(screen.getAllByTestId("zone-bay-edit")[2]); // A2
+    fireEvent.click(screen.getByTestId("zone-split-length"));
+    expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(4);
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary", {}, { timeout: 4000 });
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    const ids = put.body!.slots.map((b: { id: number }) => b.id).sort((x: number, y: number) => x - y);
+    expect(ids).toEqual([101, 102, 103, 104]); // the originals 101, 102 and the two new ones, 103 and 104
+    const a1a = put.body!.slots.find((b: { id: number }) => b.id === 101);
+    const a1b = put.body!.slots.find((b: { id: number }) => b.id === 103);
+    expect([a1a.name, a1b.name]).toEqual(["A1a", "A1b"]);
+    expect(a1a.poly[1][0]).toBeCloseTo(a1b.poly[0][0], 3); // they share the cut
+    expect(a1a.poly[0][0]).toBeCloseTo(0.2, 3); // and together fill the old bay (it spanned x 0.2 to 0.3)
+    expect(a1b.poly[1][0]).toBeCloseTo(0.3, 3);
+  });
+
+  it("Undo takes back a move, a size change and a split one at a time (also with Ctrl+Z), and the restored bays are saved before the run", async () => {
+    const net = await ready(serve());
+    const undo = screen.getByTestId("zone-undo-edit") as HTMLButtonElement;
+    expect(undo.disabled).toBe(true); // nothing to take back yet
+    fireEvent.click(screen.getAllByTestId("zone-bay-edit")[0]);
+    fireEvent.change(screen.getByTestId("zone-fine-step"), { target: { value: "10" } });
+    fireEvent.click(screen.getByTestId("zone-fine-right")); // 10 px of 2000 = 0.005
+    fireEvent.click(screen.getByTestId("zone-fine-wider"));
+    fireEvent.click(screen.getByTestId("zone-split-width"));
+    expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(3);
+    expect(undo.textContent).toContain("(3)");
+    fireEvent.click(undo); // the split
+    expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(2);
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true }); // the wider
+    fireEvent.click(undo); // the move
+    expect(undo.disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    const a1 = put.body!.slots.find((b: { id: number }) => b.id === 101);
+    expect(a1.poly[0][0]).toBeCloseTo(0.2, 4); // back where it was
+    expect(a1.poly[1][0]).toBeCloseTo(0.3, 4);
+    expect(put.body!.slots).toHaveLength(2);
+  });
+
+  it("Row / Back / Front buttons move the bay along its own directions", async () => {
+    const net = await ready(serve());
+    fireEvent.click(screen.getAllByTestId("zone-bay-edit")[0]);
+    fireEvent.change(screen.getByTestId("zone-fine-step"), { target: { value: "10" } });
+    fireEvent.click(screen.getByTestId("zone-fine-back")); // the mock bay: front edge at y 0.5, back edge above it: back = up, 10 px of 1000 = 0.01
+    fireEvent.click(screen.getByTestId("zone-fine-row-right"));
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    const a1 = put.body!.slots.find((b: { id: number }) => b.id === 101);
+    expect(a1.poly[0][0]).toBeCloseTo(0.205, 4);
+    expect(Math.abs(a1.poly[0][1] - 0.5)).toBeCloseTo(0.01, 3);
+  });
+});
+
+describe("the Top-down (aerial) scale method", () => {
+  it("is a third scale method that sends the typed distance without a lens and needs no setup service", async () => {
+    const net = serve({ down: true });
+    show();
+    await upload();
+    fireEvent.click(screen.getByText("Top-down (aerial)"));
+    expect(screen.queryByTestId("sess-lens")).toBeNull(); // GeoCalib's lens choice is not part of it
+    zoneReady();
+    expect(screen.getByTestId("zone-calibrate").textContent).toContain("top-down");
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay")).toHaveLength(2), { timeout: 4000 });
+    const body = posts(net, "/calibrate").body!;
+    expect([body.method, body.zone, "lens" in body]).toEqual(["topdown", 1, false]);
+    expect(body.reference.metres).toBe(5);
+  });
+
+  it("GeoCalib stays the default and still sends its lens", async () => {
+    const net = serve();
+    show();
+    await upload();
+    expect(screen.getByTestId("sess-lens")).toBeTruthy();
+    zoneReady();
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay")).toHaveLength(2), { timeout: 4000 });
+    expect(posts(net, "/calibrate").body).toMatchObject({ method: "geocalib", lens: "simple_radial", rows: 0 }); // rows are Auto unless chosen: the zone's depth decides
+  });
 });
 
 describe("dynamic slots and zone rows", () => {

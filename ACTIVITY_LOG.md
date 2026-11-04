@@ -2990,3 +2990,29 @@ nearest generated bay. Snapshot to roll back to: `C:\F\Backups\CarParking\202610
   box); Narrower / Wider / Shorter / Longer (2 % each), Shrink 2 % (all round, to keep a bay off its neighbour's car) and turn 0.5 deg either way. Edits go through the same path as dragging: kept in the zone and the merged list,
   the zone marked edited, saved (PUT /zones/{z}/slots) before the next bays are added and before the run.
 - tests: vitest +5 (4 for bayfine.ts, 1 for the panel: keys, buttons, bay vs whole zone, typing ignored, saved before run). tsc clean; 261 passed. Not deployed.
+
+## 161 - Sample test: "Top-down (aerial)" scale method (GeoCalib reads overhead pictures as nearly level)
+- Cause: on data/sample/Aerial View of a Busy Car Park.png (a drone shot looking nearly straight down) GeoCalib has no horizon, no vertical edges and almost no convergence to read gravity from (focal length and tilt cannot
+  be told apart in a near-orthographic view): it answered a pitch of -14.8 deg, and `build_record` rightly refused a camera that looks level (MIN_PITCH 3 deg; `geometry/pipeline.py`, unchanged). The threshold is not
+  the fault: the pitch value is wrong, so lowering it would not help.
+- New third scale method, chosen by the user (never an automatic fallback: on an oblique picture that would silently give wrong metres): `ss.topdown_record` models a nadir camera (pitch 89.5 deg, no roll; focal
+  length set from the typed reference for a nominal 20 m height, so the scale is exactly the reference's) and goes through the same `build_record` as the other methods. API: `method: "topdown"` (needs `reference`, no setup
+  service); a GeoCalib job that fails with "too level for ground" now ends "...; for an aerial / drone picture looking straight down choose the Top-down scale method" (sample API only, pipeline text unchanged).
+  UI: a "Top-down (aerial)" pill in the Scale card (no lens choice, no setup-service remark).
+- Real check (YOLOv8s, scratch container): zone along one column of the aerial picture, reference one 2.5 m bay: 18 bays from 10 detected cars at 2.4-2.5 m x 6.2 m, 17 bays at 2.54-2.64 m with no cars.
+- tests: pytest +3 (topdown_record: 10 bays of 2.5 x 5 m everywhere, same-point reference refused; API top-down needs no service; level GeoCalib answer carries the hint), vitest +2. Not deployed. Not touched: pipeline.py,
+  reanchor.py, Camera 1, GeoCalib / pins methods, zone generation, dynamic slots, fine adjustment.
+
+## 162 - Sample test: a zone two cars deep gets two rows automatically; Split bay (aerial picture)
+- Cause (reproduced on data/sample/Aerial View of a Busy Car Park.png, YOLOv8s, top-down scale): a zone drawn over two columns of cars side by side is ~11 m deep, and a zone is laid as ONE row of bays (rows = 1), so each bay
+  was 11 m long and spanned both cars. The scale (2.4-3 m along the row, from the reference) was right; the depth was not divided.
+- Fix 1: `rows` 0 = Auto (new default in the UI; the API's own default stays 1): `ss.auto_rows` = round(the zone frame's depth / bay length), 1..6, 1 without a reference. The aerial zone: 28 bays in 2 rows of 5.5 m
+  (14 along), one cell per car; the sample pictures (depth ~5 m) stay one row (the select still offers 1-6). The Rows box shows "Auto".
+- Fix 2: "Split the selected bay" in Select zone & slot adjustment: `bayfine.splitBay` cuts a bay into two by the square-to-quad homography of its corners, so the cut is equal on the ground, left | right or front / back; the first
+  part keeps the id and gets the name + "a", the second takes the zone's next free id and + "b"; saved (PUT /zones/{z}/slots) before the next bays and the run.
+- tests: pytest +1 (two rows for a deep zone, one for a one-car-deep zone, bays one car long), vitest +4 (splitBay x3, the split in the panel and its save). Backend 168 passed, vitest 267 passed. Not deployed.
+
+## 163 — Sample test: far cars hold their thin bay; Edit bays Undo and moves along the bay
+- **Occupancy:** the point rules (`match_score`) take a car's foot point; a small far car's point lands just past its thin bay (more than 15 % of the box height), so the bay stayed FREE although the car had a box. New last-resort pass `FixedSlotTracker._cover_pass` (`fixed_slots.py`): a vehicle no bay claimed takes the free bay its box covers >= `COVER_MIN` (0.6) with the bay's centre inside the box, nearest to the box bottom first (a bay behind a car is not taken for it). Off by default (`cover_fallback = False`); only `run_sample` turns it on, so the live trackers and Camera 1 are unchanged. Test `test_cover_pass_gives_a_far_car_its_thin_bay`.
+- **Edit bays:** `Undo` button (and Ctrl+Z) takes back the last bay edit (drag, corner drag, arrows, size, turn, split), 50 deep; the restored zone is saved again before the run. New moves along the bay's own directions (`shiftAlong` in `bayfine.ts`): Row ◂ / ▸, Back ↥ / Front ↧. The screen-direction arrows (←↑↓→) were already there.
+- Not deployed. Verified: related backend suites 138 passed, tsc clean, vitest 269/269. The user's own screenshot (image_284b1d.png) is an overlay, not a runnable input, so the occupancy fix is checked on a synthetic case only.

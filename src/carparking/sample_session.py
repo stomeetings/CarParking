@@ -101,6 +101,30 @@ def geocalib_record(frame: np.ndarray, raw: list[dict], *, geo: dict, depth: dic
         raise SessionError(str(e)) from None
 
 
+def topdown_record(frame: np.ndarray, raw: list[dict], *, reference: dict, polygon, bay=BAY, aisle: float = AISLE, meta: dict | None = None,
+                   row_outline=None) -> dict:
+    """The calibration record of a picture taken looking straight down (aerial / drone): no GeoCalib, so no estimated tilt. The camera is modelled as a
+    nadir one (pitch 90 deg, no roll), whose ground scale is the same everywhere: metres per pixel = height / focal length: the focal length is
+    set from the typed `reference` ({"a", "b", "metres"}: two ground points a known distance apart) for a nominal camera height, so the scale is exactly the reference's."""
+    h, w = frame.shape[:2]
+    poly = _fractions(polygon, "the parking surface", MIN_POLYGON_POINTS)
+    _fractions([reference.get("a"), reference.get("b")], "reference", 2)
+    if not float(reference.get("metres", 0)) > 0:
+        raise SessionError("reference: the distance between the two points must be positive (metres)")
+    ppm = float(np.linalg.norm((np.asarray(reference["a"], float) - np.asarray(reference["b"], float)) * (w, h))) / float(reference["metres"])  # picture pixels per metre
+    if ppm < 1e-3:
+        raise SessionError("reference: the two points are the same: click two ground points a known distance apart")
+    try:
+        usable, every = vehicle_boxes(raw, (w, h))
+        rec = build_record(width=w, height=h, polygon=poly.tolist(), f=TOPDOWN_HEIGHT * ppm, up=TOPDOWN_UP, vehicles=usable, obstacles=every,
+                           reference=reference, bay=tuple(bay), aisle=aisle, meta=meta or {}, row_outline=row_outline,
+                           min_surface_m2=0.0 if row_outline is not None else 20.0)
+    except SetupError as e:
+        raise SessionError(str(e)) from None
+    rec["warnings"].append("measured as a top-down view: the ground scale is taken as the same everywhere; use this only for pictures looking straight down")
+    return rec
+
+
 def grid_slots(record: dict, w: int, h: int) -> list[dict]:
     """The bays packed on the surface as fixed-slot dicts (image fractions, ids 1..n front to back, 'B<n>'): the measured tiles only, no guessed
     extension of the lane."""
@@ -126,6 +150,8 @@ def session_run(profile_run: dict, polygon=None) -> dict:
     return {**profile_run, "fixed_mode": False, "fixed": None, "auto": None, "m5": m5}
 
 
+TOPDOWN_HEIGHT = 20.0  # the nominal camera height (m) of the top-down camera: its focal length is set from the reference so that height is exact (the scale is what matters)
+TOPDOWN_UP = (0.0, -0.0087, -1.0)  # straight down, a hair off so the pitch is 89.5 deg (a pitch of exactly 90 has no horizon direction to build a roll from)
 MAX_ZONE_BAYS = 99  # slot ids of zone z are z * 100 + n
 ZONE_OVERLAP = 0.3  # a bay of a later zone this much over a bay of an earlier zone (IoU) is the same bay: kept once
 
@@ -463,6 +489,17 @@ def frame_grid(frame: ZoneFrame, w: int, h: int, bay=BAY, rows: int = 1) -> tupl
                    "bays_along": n, "rows": rows}
 
 
+MAX_ROWS = 6  # rows of bays in one zone
+
+
+def auto_rows(frame: "ZoneFrame | None", length_m: float) -> int:
+    """How many rows of bays a zone is deep: its depth on the ground (the zone frame's, from the outline, the focal length and the reference) over a bay's
+    length, rounded: a zone drawn over two cars side by side (10-12 m deep) is two rows, one bay per car, not one bay across both. 1 without a frame."""
+    if frame is None or not np.isfinite(frame.depth_m) or length_m <= 0:
+        return 1
+    return int(min(MAX_ROWS, max(1, round(frame.depth_m / length_m))))
+
+
 def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars=(), reference: dict | None = None) -> tuple[list[dict], dict]:
     """A zone's bays laid straight along its row, on the ground, by the zone's own calibration. No car-anchored lattice: the bays follow the zone.
       * the row's direction is the outline's longer side IN THE PICTURE (a zone is drawn along its row), measured on the ground where the outline
@@ -475,6 +512,7 @@ def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars
     against the zone's own metric frame (ZoneFrame, when a reference is given); without cars but with a reference, the frame alone lays them
     (frame_grid). The camera grid below is the last resort: it is right only as far as GeoCalib's tilt, roll and height are, and on the sample
     pictures they were wrong enough to put two bays on one car at the row's far end (image2.png: 16 bays for 7 cars).
+    rows: how many rows of bays from the front edge; 0 = automatic (auto_rows: the zone's depth over the bay length, with a reference).
     -> (fixed-slot dicts: fractions, ids 1..n, front row first; {"width_m", "length_m", "source", "bays_along", "rows"})."""
     from carparking.geometry.bev import densify
     from carparking.geometry.camera import to_ground
@@ -483,6 +521,8 @@ def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars
     if cam is None:
         raise SessionError("the calibration does not fit the picture's shape")
     frame = zone_frame(outline, w, h, cam, reference)
+    if not rows:
+        rows = auto_rows(frame, float(bay[1]))
     by_cars = car_row_grid(outline, w, h, list(cars), rows, cam, frame, float(bay[0]))
     if by_cars is not None:
         return by_cars

@@ -299,6 +299,7 @@ CLEAR_FRAMES = 30
 MAX_CAPACITY = 20  # the most vehicles an operator can say one slot holds
 CAPACITY_FRAMES = 5  # frames a capacity slot's vehicle count is judged over (see FixedSlotTracker._count_loads)
 CAPACITY_DISTINCT = 0.5  # footprint IoU from which two boxes in a capacity slot are one vehicle
+COVER_MIN = 0.6  # share of a free slot a box must cover for the Sample test's cover pass (FixedSlotTracker._cover_pass)
 INSIDE_SHARE = 0.5  # the most ground_on a vehicle whose reference point lies inside a bay needs to hold it (match_score)
 SPAWN_PAD = 0.1  # the new bay reaches this share of the footprint's height below the box bottom (the foot point is inside it)
 
@@ -379,6 +380,7 @@ class FixedSlotTracker(SlotTracker):
         self.auto = auto
         surface = (auto or {}).get("surface")
         self.surface = None if not surface else np.float32(surface).reshape(-1, 1, 2)
+        self.cover_fallback = False  # the Sample test turns it on (run_sample); the live trackers never do
         self.split = split  # sub-bays for vehicles sharing a slot (see SUB-BAYS above)
         self._spawns: list[dict] = []  # vehicles standing in no bay: {"fp", "parent", "first", "last", "n"}
         self._dyn_next = DYNAMIC_BASE
@@ -645,8 +647,35 @@ class FixedSlotTracker(SlotTracker):
                 if i not in out and j not in used:
                     out[i] = j
                     used.add(j)
+        if self.cover_fallback:
+            self._cover_pass(polys, ids, out, used)
         self.held = {ids[j]: round(ground_on(polys[i], self.slots[ids[j]]["poly"]), 2) for i, j in out.items()}
         return out
+
+    def _cover_pass(self, polys, ids, out: dict[int, int], used: set[int]) -> None:
+        """Last resort for a vehicle no slot claimed by its point: the free slot its box mostly covers (>= COVER_MIN of the slot) and
+        whose centre is inside the box. A far tile is a few pixels tall, so the foot point of a small car lands just past it and
+        the point rules above miss. The nearest slot to the box's bottom wins, so a slot behind a car is not taken for it."""
+        cand = []
+        for i, p in enumerate(polys):
+            if i in out:
+                continue
+            box = np.float32(p)
+            (x1, y1), (x2, y2) = box.min(0), box.max(0)
+            for j, k in enumerate(ids):
+                if j in used:
+                    continue
+                slot = self.slots[k]["poly"]
+                cx, cy = slot.mean(0)
+                if not (x1 <= cx <= x2 and y1 <= cy <= y2):
+                    continue
+                cover = overlap(slot, box)[1]
+                if cover >= COVER_MIN:
+                    cand.append((abs(float(y2) - float(cy)), -cover, i, j))
+        for _, _, i, j in sorted(cand):
+            if i not in out and j not in used:
+                out[i] = j
+                used.add(j)
 
     def update(self, dets: list[dict], frame_shape, now: float | None = None) -> list[dict]:
         now = time.time() if now is None else now

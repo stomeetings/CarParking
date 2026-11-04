@@ -366,3 +366,39 @@ def test_a_thin_slanted_outline_pairs_its_corners_round_the_outline_not_by_dista
     for order in ([outline[0], outline[1], outline[3], outline[2]], [outline[1], outline[0], outline[3], outline[2]]):  # clicked in a bow-tie order
         (g0, g1), (c0, c1) = ss._outline_sides(np.asarray(order, float))
         assert (g0.tolist(), g1.tolist(), c0.tolist(), c1.tolist()) == (f0.tolist(), f1.tolist(), b0.tolist(), b1.tolist())
+
+
+def test_a_topdown_picture_gets_true_size_bays_from_the_reference_alone():
+    w, h = 1448, 1086
+    frame = np.full((h, w, 3), 110, np.uint8)
+    ref = {"a": [300 / w, 500 / h], "b": [360 / w, 500 / h], "metres": 2.5}  # one painted bay, 60 px wide
+    outline = [(300 / w, 500 / h), (900 / w, 500 / h), (900 / w, 620 / h), (300 / w, 620 / h)]
+    rec = ss.topdown_record(frame, [], reference=ref, polygon=outline, row_outline=outline)
+    assert np.degrees(rec["calibration"]["pitch"]) == pytest.approx(89.5, abs=0.1) and any("top-down" in t for t in rec["warnings"])
+    slots, info = ss.row_grid(rec, outline, w, h, reference=ref)
+    assert len(slots) == info["bays_along"] == 10 and info["width_m"] == pytest.approx(2.5, abs=0.1)
+    from carparking.geometry.camera import to_ground
+    cam = ss.ground_camera(rec, w, h)
+    for s in slots:
+        g = to_ground(cam, np.asarray(s["poly"]) * (w, h))
+        assert np.ptp(g[:, 0]) == pytest.approx(2.5, abs=0.2) and np.ptp(g[:, 1]) == pytest.approx(5.0, abs=0.2)  # the same everywhere: a nadir view
+    with pytest.raises(ss.SessionError):
+        ss.topdown_record(frame, [], reference={**ref, "b": ref["a"]}, polygon=outline)  # two identical points measure nothing
+
+
+def test_a_zone_two_cars_deep_gets_two_rows_automatically_one_bay_per_car():
+    w, h = 1448, 1086
+    frame = np.full((h, w, 3), 110, np.uint8)
+    ref = {"a": [700 / w, 500 / h], "b": [700 / w, 544 / h], "metres": 2.5}  # a top-down picture: 17.6 px per metre
+    deep = [(690 / w, 790 / h), (690 / w, 20 / h), (885 / w, 20 / h), (885 / w, 790 / h)]  # 11 m deep: a column of cars either side of the middle
+    rec = ss.topdown_record(frame, [], reference=ref, polygon=deep, row_outline=deep)
+    one, info1 = ss.row_grid(rec, deep, w, h, rows=1, reference=ref)
+    auto, info0 = ss.row_grid(rec, deep, w, h, rows=0, reference=ref)
+    assert info1["rows"] == 1 and info0["rows"] == 2 and len(auto) == 2 * len(one)  # one bay across both cars -> two rows of bays
+    from carparking.geometry.camera import to_ground
+    cam = ss.ground_camera(rec, w, h)
+    depths = [float(np.ptp(to_ground(cam, np.asarray(s["poly"]) * (w, h))[:, 0])) for s in auto]
+    assert all(4.5 <= d <= 6.5 for d in depths), depths  # each bay is one car long (it was 11 m)
+    narrow = [(690 / w, 790 / h), (690 / w, 20 / h), (780 / w, 20 / h), (780 / w, 790 / h)]  # one car deep (5 m): still one row
+    assert ss.row_grid(ss.topdown_record(frame, [], reference=ref, polygon=narrow, row_outline=narrow), narrow, w, h, rows=0, reference=ref)[1]["rows"] == 1
+    assert ss.auto_rows(None, 5.0) == 1  # without a reference there is no depth to go by

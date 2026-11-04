@@ -115,6 +115,8 @@ def run_sample(frame, run: dict, slots: list[dict], raw: list[dict], layers: dic
         mon = build_monitor(sandbox, Replay(raw), False, db)
         mon.start(frame.shape)
         tr = mon.tracker
+        if hasattr(tr, "cover_fallback"):
+            tr.cover_fallback = True  # a small far car whose foot point misses its thin bay still holds it
         want = {k: bool(layers.get(k)) for k in ("spillage", "obstacle_filter", "blocked_objects")}
         if hasattr(tr, "set_spillage"):
             tr.set_spillage(want["spillage"])

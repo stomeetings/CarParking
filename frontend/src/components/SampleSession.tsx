@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, Crosshair, FlaskConical, Hand, ImageUp, Load
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ApiError, api } from "../api";
 import { points } from "../lib";
-import { resizeBay, rotateBay, shiftBays, tuneBays } from "../bayfine";
+import { resizeBay, rotateBay, shiftAlong, shiftBays, splitBay, tuneBays } from "../bayfine";
 import { type DrawnSlot, type Pt, area, moveSlot, moveVertex, pt } from "../slotdraw";
 import { type Expected, ExpectedInputs, type Layer, LayerBoxes, MAX_BYTES, ResultPanel, type SampleResult, readFile } from "./SampleResult";
 import { DirectSlotCanvas } from "./DirectSlotCanvas";
@@ -58,7 +58,7 @@ interface ZoneMerge { zones: ZoneCal[]; zone_slots: DrawnSlot[]; zone_dropped: {
 const ZONE_COLOURS = ["#0ea5b7", "#f97316", "#8b5cf6", "#16a34a", "#e11d48", "#ca8a04"];
 const zoneColour = (id: number) => ZONE_COLOURS[(id - 1) % ZONE_COLOURS.length];
 const zoneLetter = (id: number) => String.fromCharCode(65 + ((id - 1) % 26));
-type Method = "rectangle" | "geocalib";
+type Method = "rectangle" | "geocalib" | "topdown";
 
 const BASE = "/api/sample-sessions";
 const PIN_HELP = "Click the 4 corners of a rectangle on the ground whose sides you know (a parking bay, a painted box), in order around it: 1 → 2 is the first side, 2 → 3 the second.";
@@ -139,6 +139,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const [zoneNote, setZoneNote] = useState<string | null>(null);
   const [fineTarget, setFineTarget] = useState<"bay" | "zone">("bay"); // fine adjustment: the selected bay, or every bay of the active zone
   const [fineStep, setFineStep] = useState(1); // pixels per arrow press (Shift: five times)
+  const [undo, setUndo] = useState<{ merge: ZoneMerge; dirty: number[] }[]>([]); // the bay edits made here (drag, fine adjustment, split), newest last
 
   const fail = useCallback((e: unknown, what: string, retry?: () => void) => {
     const err = e as ApiError;
@@ -147,7 +148,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   }, [onNeedAdmin]);
 
   const reset = () => {
-    setZones([]); setActiveZone(null); setMerge({ zones: [], zone_slots: [], zone_dropped: [] }); setSkip([]); setZoneDirty([]); setZoneNote(null);
+    setZones([]); setActiveZone(null); setMerge({ zones: [], zone_slots: [], zone_dropped: [] }); setSkip([]); setZoneDirty([]); setZoneNote(null); setUndo([]);
     setDirect(null); setShown(null); setUseDrawn(false); setDrawn([]); setPins([]); setRef([]); setSel(null); setJob(null); setResult(null); setMessage(null);
     setMode(method === "rectangle" ? "pins" : "ref");
   };
@@ -177,7 +178,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       reset();
       setSession(s);
       setLayers(s.layers);
-      setZones([{ id: 1, name: "Zone A", outline: [], sam: [], surface: null, rows: 1 }]); // the picture is laid out by zones only: the first one is ready to draw
+      setZones([{ id: 1, name: "Zone A", outline: [], sam: [], surface: null, rows: 0 }]); // the picture is laid out by zones only: the first one is ready to draw
       setActiveZone(1);
     } catch (e) {
       fail(e, "Starting a sample session");
@@ -194,6 +195,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       if (r.zone != null && r.slots) {
         const zid = r.zone;
         setMerge({ zones: r.zones ?? [], zone_slots: r.zone_slots ?? [], zone_dropped: r.zone_dropped ?? [] });
+        setUndo([]);
         setZoneDirty((d) => d.filter((x) => x !== zid)); // a new calibration replaces the zone's edited bays
         setMode("edit");
       } else if (r.zone != null && r.polygon) {
@@ -287,7 +289,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const setZone = (id: number, change: Partial<ZoneDraft>) => setZones((all) => all.map((z) => (z.id === id ? { ...z, ...change } : z)));
   const addZone = () => {
     const id = Math.max(0, ...zones.map((z) => z.id), ...merge.zones.map((z) => z.zone)) + 1;
-    setZones([...zones, { id, name: `Zone ${zoneLetter(id)}`, outline: [], sam: [], surface: null, rows: 1 }]);
+    setZones([...zones, { id, name: `Zone ${zoneLetter(id)}`, outline: [], sam: [], surface: null, rows: 0 }]);
     setActiveZone(id);
     setMode("zone-outline");
   };
@@ -296,6 +298,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       try {
         const m = await api.delete<ZoneMerge>(`${BASE}/${session.id}/zones/${id}`);
         setMerge(m);
+        setUndo([]); // (the zone is gone: older snapshots would bring it back)
       } catch (e) {
         return fail(e, "Removing the zone");
       }
@@ -325,7 +328,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
     const polygon = z.surface ?? z.outline;
     return sendJob("calibrate", method === "rectangle"
       ? { method, tune, polygon, pins, sides: [Number(sides.a), Number(sides.b)], zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows }
-      : { method, tune, polygon, lens, reference: { a: ref[0], b: ref[1], metres: Number(refMetres) }, zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows }, `Calibrating ${z.name}`);
+      : { method, tune, polygon, ...(method === "geocalib" ? { lens } : {}), reference: { a: ref[0], b: ref[1], metres: Number(refMetres) }, zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows }, `Calibrating ${z.name}`);
   };
   // a zone's bays edited on the picture: kept here (in the zone and in the merged list) and saved to the server before an extension or a run
   const editZoneBays = (next: DrawnSlot[], id: number) => {
@@ -359,6 +362,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       if (!(await saveZones())) return;
       const r = await api.post<ZoneMerge & { added: number; note: string | null }>(`${BASE}/${session.id}/zones/${zid}/extend`, { count });
       setMerge({ zones: r.zones, zone_slots: r.zone_slots, zone_dropped: r.zone_dropped });
+      setUndo([]); // (the server added bays: an older snapshot would drop them)
       setZoneNote(r.note);
     } catch (e) {
       fail(e, "Adding the next bays");
@@ -397,7 +401,16 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const bays = merge.zone_slots.filter((b) => !skip.includes(b.id));
   // ---- fine adjustment of laid bays (the generation is not touched): arrow keys / buttons shift, the size and turn buttons tune the selected bay or the whole active zone
   const fineIds = (): number[] => (fineTarget === "zone" ? bays.filter((b) => Math.floor(b.id / 100) === activeZone).map((b) => b.id) : bays.filter((b) => b.id === sel).map((b) => b.id));
+  const pushUndo = () => setUndo((u) => [...u.slice(-49), { merge, dirty: zoneDirty }]);
+  const undoEdit = () => {
+    const last = undo[undo.length - 1];
+    if (!last) return;
+    setUndo((u) => u.slice(0, -1));
+    setMerge(last.merge);
+    setZoneDirty((d) => [...new Set([...d, ...last.dirty, ...last.merge.zones.map((z) => z.zone)])]); // (the server holds the edited bays: save the restored ones over them)
+  };
   const applyFine = (next: DrawnSlot[], ids: number[]) => {
+    pushUndo();
     const changed = next.filter((b) => ids.includes(b.id));
     const zs = [...new Set(changed.map((b) => Math.floor(b.id / 100)))];
     setMerge((m) => ({ ...m, zone_slots: m.zone_slots.map((b) => changed.find((c) => c.id === b.id) ?? b),
@@ -408,15 +421,41 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
     const ids = fineIds();
     if (ids.length) applyFine(shiftBays(merge.zone_slots, ids, dxPx / w, dyPx / h), ids);
   };
+  const fineAlong = (across: number, along: number) => {
+    const ids = fineIds();
+    if (ids.length) applyFine(shiftAlong(merge.zone_slots, ids, w, h, across, along), ids);
+  };
   const fineTune = (fn: (poly: Pt[]) => Pt[]) => {
     const ids = fineIds();
     if (ids.length) applyFine(tuneBays(merge.zone_slots, ids, fn), ids);
+  };
+  // split the selected bay in two (a bay laid across two cars): side by side, or front to back; the second part gets the zone's next free id
+  const splitSelected = (axis: "width" | "length") => {
+    const b = merge.zone_slots.find((x) => x.id === sel);
+    if (!b) return;
+    const zid = Math.floor(b.id / 100);
+    const used = new Set(merge.zone_slots.filter((x) => Math.floor(x.id / 100) === zid).map((x) => x.id));
+    const free = Array.from({ length: 99 }, (_, i) => zid * 100 + i + 1).find((id) => !used.has(id));
+    if (free === undefined) return setZoneNote("This zone already has 99 bays: remove one first.");
+    const [p1, p2] = splitBay(b.poly, axis, 2);
+    if (!p2) return setZoneNote("This bay cannot be split: it is not a four-cornered bay.");
+    setZoneNote(null);
+    const first = { ...b, name: `${b.name}a`, poly: p1 };
+    const second = { ...b, id: free, name: `${b.name}b`, poly: p2 };
+    pushUndo();
+    const cut = (all: DrawnSlot[]) => all.flatMap((x) => (x.id === b.id ? [first, second] : [x]));
+    setMerge((m) => ({ ...m, zone_slots: cut(m.zone_slots), zones: m.zones.map((z) => (z.zone === zid ? { ...z, slots: cut(z.slots) } : z)) }));
+    setZoneDirty((d) => (d.includes(zid) ? d : [...d, zid]));
   };
   useEffect(() => {
     if (mode !== "edit") return;
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return; // typing is not nudging
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
+        if (undo.length) (e.preventDefault(), undoEdit());
+        return;
+      }
       const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
       if (!d || e.ctrlKey || e.metaKey || e.altKey) return;
       if (!fineIds().length) return;
@@ -463,9 +502,10 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                 <Button variant={mode === "zone-outline" ? "primary" : "outline"} onClick={() => setMode("zone-outline")} data-testid="zone-draw"><Crosshair size={14} /> Draw outline ({az.outline.length})</Button>
                 <Button variant="ghost" onClick={() => setZone(az.id, { outline: az.outline.slice(0, -1), surface: null })} disabled={!az.outline.length} data-testid="zone-undo">Undo corner</Button>
                 <Button variant="ghost" onClick={() => setZone(az.id, { outline: [], sam: [], surface: null })} disabled={!az.outline.length && !az.sam.length} data-testid="zone-clear">Clear</Button>
-                <label className="block text-xs text-muted" title="Rows of bays in this zone, from its front edge (the one nearest the camera)">Rows
+                <label className="block text-xs text-muted" title="Rows of bays in this zone, from its front edge (the one nearest the camera). Auto: the zone's depth over a bay's length, so a zone drawn over two cars side by side gets two rows">Rows
                   <select className="ml-1 rounded-md border border-line bg-white px-1.5 py-1 text-sm text-ink" value={az.rows} data-testid="zone-rows"
                           onChange={(e) => setZone(az.id, { rows: Number(e.target.value) })}>
+                    <option value={0}>Auto</option>
                     {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
                   </select>
                 </label>
@@ -478,7 +518,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               </div>
               <p className="text-xs text-muted">{az.surface ? "SAM's ground inside the zone is shown filled: it is what gets calibrated." : "Without SAM the outline itself is the parking ground. In SAM mode click the open ground (Shift-click what is not parking)."}</p>
               <Button onClick={() => void calibrateZone(az)} disabled={!!why || running || busy} title={why ?? undefined} data-testid="zone-calibrate">
-                {running ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />} {cal ? "Calibrate again" : "Calibrate and lay bays"} ({method === "geocalib" ? "GeoCalib" : "ground pins"})
+                {running ? <Loader2 size={14} className="animate-spin" /> : <FlaskConical size={14} />} {cal ? "Calibrate again" : "Calibrate and lay bays"} ({method === "geocalib" ? "GeoCalib" : method === "topdown" ? "top-down" : "ground pins"})
               </Button>
               {why && <p className="rounded-md bg-warning/10 px-2.5 py-1.5 text-xs text-ink" data-testid="zone-reason">The button wakes up when this is done: {why}.</p>}
               {job && running && <p className="text-xs text-ink" data-testid="zone-job">{job.stage} · {Math.round(job.progress * 100)} %</p>}
@@ -526,6 +566,14 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                         <span className="text-xs text-muted">or the arrow keys (Shift = 5×)</span>
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs text-muted">Along the bay:</span>
+                        {([["Row ◂", -1, 0, "row-left", "along its front, to its left"], ["Row ▸", 1, 0, "row-right", "along its front, to its right"],
+                           ["Back ↥", 0, 1, "back", "towards its back (away from the camera)"], ["Front ↧", 0, -1, "front", "towards its front (nearer the camera)"]] as const).map(([t, a, b2, id, tip]) => (
+                          <Button key={id} variant="outline" onClick={() => fineAlong(a * fineStep, b2 * fineStep)} disabled={fineIds().length === 0} data-testid={`zone-fine-${id}`} title={`Move ${tip}`}>{t}</Button>
+                        ))}
+                        <Button variant="outline" onClick={undoEdit} disabled={undo.length === 0} data-testid="zone-undo-edit" title="Take back the last bay edit (move, reshape, size, turn, split)">Undo{undo.length ? ` (${undo.length})` : ""}</Button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 0.98, 1))} disabled={fineIds().length === 0} data-testid="zone-fine-narrower" title="2 % narrower along its front">Narrower</Button>
                         <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 1.02, 1))} disabled={fineIds().length === 0} data-testid="zone-fine-wider" title="2 % wider along its front">Wider</Button>
                         <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 1, 0.98))} disabled={fineIds().length === 0} data-testid="zone-fine-shorter" title="2 % shorter towards its back">Shorter</Button>
@@ -533,6 +581,13 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                         <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 0.98, 0.98))} disabled={fineIds().length === 0} data-testid="zone-fine-shrink" title="2 % smaller all round: keeps a bay off its neighbour's car">Shrink 2 %</Button>
                         <Button variant="outline" onClick={() => fineTune((p) => rotateBay(p, w, h, -0.5))} disabled={fineIds().length === 0} data-testid="zone-fine-ccw" title="Turn 0.5° anticlockwise">↺ 0.5°</Button>
                         <Button variant="outline" onClick={() => fineTune((p) => rotateBay(p, w, h, 0.5))} disabled={fineIds().length === 0} data-testid="zone-fine-cw" title="Turn 0.5° clockwise">↻ 0.5°</Button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-1.5">
+                        <span className="text-xs font-semibold">Split the selected bay</span>
+                        <Button variant="outline" onClick={() => splitSelected("width")} disabled={!bays.some((b) => b.id === sel)} data-testid="zone-split-width"
+                                title="Two bays side by side, left and right (equal on the ground)">Left | right</Button>
+                        <Button variant="outline" onClick={() => splitSelected("length")} disabled={!bays.some((b) => b.id === sel)} data-testid="zone-split-length"
+                                title="Two bays one behind the other, front and back (a bay laid across two cars)">Front / back</Button>
                       </div>
                       <p className="text-xs text-muted">Changes only the bays drawn here; the generated layout is not recalculated. They are saved before the next bays are added and before the run.</p>
                     </div>
@@ -724,14 +779,14 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                             <polygon points={points(b.poly, w, h)} fill={b.id === sel ? "rgba(79,70,229,0.25)" : `${colour}26`} stroke={b.id === sel ? "#4f46e5" : colour}
                                      strokeWidth={b.id === sel ? 2.5 : 2} vectorEffect="non-scaling-stroke" style={{ cursor: on ? (mode === "edit" ? "move" : "default") : "pointer" }}
                                      onClick={(e) => { if (!on && !panTool) (e.stopPropagation(), setActiveZone(z.id)); }}
-                                     onMouseDown={(e) => { if (on && mode === "edit" && !panTool && e.button === 0) (e.stopPropagation(), setSel(b.id), setDrag({ kind: "move", id: b.id, last: at(e) })); }} />
+                                     onMouseDown={(e) => { if (on && mode === "edit" && !panTool && e.button === 0) (e.stopPropagation(), setSel(b.id), pushUndo(), setDrag({ kind: "move", id: b.id, last: at(e) })); }} />
                             <text x={b.poly.reduce((m, p) => m + p[0], 0) / b.poly.length * w} y={b.poly.reduce((m, p) => m + p[1], 0) / b.poly.length * h} fontSize={font * 0.8}
                                   textAnchor="middle" dominantBaseline="middle" fontWeight={700} fill="white" stroke="black" strokeWidth={font / 14} paintOrder="stroke" pointerEvents="none">{b.name}</text>
                           </g>
                         ))}
                         {on && mode === "edit" && bays.filter((b) => b.id === sel && Math.floor(b.id / 100) === z.id).flatMap((b) => b.poly.map(([x, y], i) => (
                           <circle key={`v${b.id}-${i}`} cx={x * w} cy={y * h} r={dot} fill="white" stroke="#4f46e5" strokeWidth={2} vectorEffect="non-scaling-stroke" style={{ cursor: "grab" }}
-                                  data-testid="zone-vertex" onMouseDown={(e) => { if (e.button === 0 && !panTool) (e.stopPropagation(), setDrag({ kind: "vertex", id: b.id, index: i })); }} />
+                                  data-testid="zone-vertex" onMouseDown={(e) => { if (e.button === 0 && !panTool) (e.stopPropagation(), pushUndo(), setDrag({ kind: "vertex", id: b.id, index: i })); }} />
                         )))}
                       </g>
                     );
@@ -755,6 +810,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
             <Card title="1 · Scale">
               <div className="flex gap-1.5" data-testid="sess-method">
                 <Pill active={method === "geocalib"} onClick={() => (setMethod("geocalib"), setMode("ref"))} title="GeoCalib in the setup service for the lens and tilt; one typed distance for the scale">GeoCalib + distance</Pill>
+                <Pill active={method === "topdown"} onClick={() => (setMethod("topdown"), setMode("ref"))}
+                      title="For an aerial / drone picture looking straight down (GeoCalib reads those as nearly level): the ground scale is the same everywhere, from one typed distance; no setup service">Top-down (aerial)</Pill>
                 <Pill active={method === "rectangle"} onClick={() => (setMethod("rectangle"), setMode("pins"))} title="Fallback without the setup service: four clicked corners of a ground rectangle of known size">Ground pins (no service)</Pill>
               </div>
               {method === "rectangle" ? (
@@ -775,19 +832,19 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                 </div>
               ) : (
                 <div className="mt-3 space-y-2">
-                  <p className="text-xs text-muted">Click two points on the ground a known distance apart (a bay's width, a wheelbase), then type that distance. Needs the setup service.</p>
+                  <p className="text-xs text-muted">Click two points on the ground a known distance apart (a bay's width, a wheelbase), then type that distance. {method === "topdown" ? "The picture is taken as looking straight down: that distance is the whole scale, and it needs no setup service." : "Needs the setup service."}</p>
                   <div className="flex flex-wrap items-end gap-2">
                     <Button variant={mode === "ref" ? "primary" : "outline"} onClick={() => setMode("ref")}><Crosshair size={14} /> Place points ({ref.length}/2)</Button>
                     <label className="block text-xs text-muted">Distance (m)
                       <input className="ml-1 w-16 rounded-md border border-line px-1.5 py-1 text-sm text-ink" inputMode="decimal" value={refMetres} data-testid="sess-ref-metres"
                              onChange={(e) => setRefMetres(e.target.value)} />
                     </label>
-                    <select className="rounded-md border border-line bg-white px-2 py-1 text-sm" value={lens} onChange={(e) => setLens(e.target.value)} data-testid="sess-lens"
+                    {method === "geocalib" && <select className="rounded-md border border-line bg-white px-2 py-1 text-sm" value={lens} onChange={(e) => setLens(e.target.value)} data-testid="sess-lens"
                             title="GeoCalib's lens model: a wide CCTV lens needs a radial one">
                       <option value="simple_radial">Lens: radial (CCTV)</option>
                       <option value="pinhole">Lens: none (pinhole)</option>
                       <option value="radial">Lens: strong radial</option>
-                    </select>
+                    </select>}
                     <Button variant="ghost" onClick={() => setRef([])} disabled={!ref.length}>Clear</Button>
                   </div>
                 </div>

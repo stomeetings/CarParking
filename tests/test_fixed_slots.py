@@ -119,6 +119,21 @@ def test_fixed_tracker_never_learns_and_debounces():
         FixedSlotTracker([FRONT_SLOT], "nearest")
 
 
+FAR_SLOTS = [{"id": 1, "name": "106", "poly": parse_points("0.30,0.19,0.40,0.21")},
+             {"id": 2, "name": "107", "poly": parse_points("0.30,0.11,0.40,0.13")}]  # a thin far tile, and another one behind it
+FAR_CAR = det(620, 150, 780, 250)  # its foot point (y 0.24) is 0.03 below the tile: just outside
+
+
+def test_cover_pass_gives_a_far_car_its_thin_bay():
+    off = FixedSlotTracker(FAR_SLOTS, "ground", hold=2, exit_hold=3, absent_free=True)
+    run(off, [[FAR_CAR]] * 5)
+    assert off.slots[1]["state"] != 1  # the point rules miss it (the live trackers keep doing so)
+    on = FixedSlotTracker(FAR_SLOTS, "ground", hold=2, exit_hold=3, absent_free=True)
+    on.cover_fallback = True
+    run(on, [[FAR_CAR]] * 5)
+    assert on.slots[1]["state"] == 1 and on.slots[2]["state"] != 1  # the tile behind it is not taken for it
+
+
 def test_back_slot_hidden_by_the_front_car_stays_busy():
     tr = FixedSlotTracker([FRONT_SLOT, BACK_SLOT], "ground", hold=2, exit_hold=5, absent_free=True)
     run(tr, [[FRONT_CAR, BACK_CAR]] * 4 + [[FRONT_CAR]] * 10)  # back car no longer detected behind the front one

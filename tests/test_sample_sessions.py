@@ -545,3 +545,33 @@ def test_a_zone_can_be_extended_by_the_next_bays_and_its_bays_edited(env, monkey
         assert len(z["slots"]) == len(a) - 1 and z["slots"][0]["poly"][0][0] == pytest.approx(a[0]["poly"][0][0] + 0.01, abs=1e-4)
         assert c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": [{**a[0], "id": 201}]}).status_code == 422  # another zone's id
         assert c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": [{**a[0], "poly": [[0, 0], [1, 1]]}]}).status_code == 422
+
+
+# ---- top-down (aerial) scale: no GeoCalib; a level GeoCalib answer says what to choose -----------------------------------------------------
+def test_the_topdown_method_needs_no_setup_service_and_takes_its_scale_from_the_typed_distance(env, monkeypatch, scripted):
+    net = Net(setup_up=False)  # the setup service is down: top-down must not need it
+    with app_client(env, monkeypatch, net) as c:
+        s = new(c)
+        a, b = (to_image(test_setup_api.CAM, [(-3, 12), (2, 15)]) / (W, H)).tolist()
+        no_ref = c.post(f"/api/sample-sessions/{s['id']}/calibrate", headers=AUTH, json={"method": "topdown", "polygon": SURFACE})
+        assert no_ref.status_code == 422 and "reference" in no_ref.text
+        body = {"method": "topdown", "polygon": SURFACE, "reference": {"a": a, "b": b, "metres": float(np.hypot(5, 3))}}
+        assert c.post(f"/api/sample-sessions/{s['id']}/calibrate", headers=AUTH, json=body).status_code == 200
+        job = wait(c, s["id"])
+        assert job["state"] == "done", job
+        assert job["result"]["method"] == "topdown" and job["result"]["bays"] >= 1
+        assert any("top-down" in t for t in job["result"]["warnings"])
+        assert net.setup_calls == []  # GeoCalib / SAM were never asked
+
+
+def test_a_level_geocalib_answer_on_an_aerial_picture_points_to_the_topdown_method(env, monkeypatch, scripted):
+    level = [0.0, -1.0, 0.1]  # up almost along the camera's -y: the camera looks (nearly) level, as GeoCalib read an overhead picture
+    net = Net(up=level)
+    with app_client(env, monkeypatch, net) as c:
+        s = new(c)
+        a, b = (to_image(test_setup_api.CAM, [(-3, 12), (2, 15)]) / (W, H)).tolist()
+        body = {"method": "geocalib", "polygon": SURFACE, "reference": {"a": a, "b": b, "metres": 5.0}, "lens": "simple_radial"}
+        assert c.post(f"/api/sample-sessions/{s['id']}/calibrate", headers=AUTH, json=body).status_code == 200
+        job = wait(c, s["id"])
+        assert job["state"] == "error"
+        assert "too level for ground" in job["error"] and "Top-down" in job["error"]
