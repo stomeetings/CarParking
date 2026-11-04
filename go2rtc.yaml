@@ -1,0 +1,28 @@
+# go2rtc (docker-compose.yml service "go2rtc"): the camera as low-latency video for the browser (WebRTC; signalling
+# through the FastAPI backend, POST /api/webrtc). The React app plays it and draws the worker's slots and boxes on top (SVG).
+# ${...} come from .env; the camera password stays there.
+#
+# The camera sends HEVC (H.265) on both channels, which most browsers can't play over WebRTC, so go2rtc's ffmpeg
+# re-encodes (only while someone watches: no viewer, no CPU):
+#   parking_hd      the main stream (2560x1440) as 1920x1080 H.264: the dashboard's default, sharp, ~0.9 CPU core
+#                   while watched (mostly the HEVC decode) and ~4.6 Mbit/s
+#   parking         the sub-stream (640x360) as H.264: low bandwidth / slow links, ~0.06 core
+#   parking_native  the main stream as sent (2560x1440 HEVC, no re-encode): Safari, or Edge with hardware decoding
+# Setting the camera's main stream to H.264 (Hikvision web UI: Configuration > Video/Audio) would make full-resolution
+# video free: parking_hd could then be a plain ${CARPARK_RTSP_URL} without re-encoding.
+
+api:
+  listen: ":1984"  # inside the compose network only: the api service proxies WebRTC signalling (viewer token)
+
+rtsp:
+  listen: "127.0.0.1:8554"  # inside the container only: go2rtc's own ffmpeg pushes the re-encoded video here
+
+webrtc:
+  listen: ":8555"
+  candidates:
+    - ${GO2RTC_CANDIDATE:stun:8555}  # this host's LAN address as browsers reach it, e.g. 192.168.20.237:8555
+
+streams:
+  parking_hd: ffmpeg:${CARPARK_RTSP_URL}#video=h264#width=1920#height=1080
+  parking: ffmpeg:${CARPARK_RTSP_SUB_URL}#video=h264
+  parking_native: ${CARPARK_RTSP_URL}

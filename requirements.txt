@@ -1,0 +1,23 @@
+# Runtime dependencies of the Streamlit app (scripts/demo_app.py) and src/carparking, pinned to the versions the
+# test suite passes on (stomeetings/carparking, 2026-10-20). The Dockerfile installs CPU-only torch first:
+#   pip install torch==2.14.1+cpu torchvision==0.29.1+cpu --index-url https://download.pytorch.org/whl/cpu \
+#       --extra-index-url https://pypi.org/simple
+#   pip install -r requirements.txt
+# ultralytics and sahi declare the full opencv-python (GUI build) as a dependency; the Dockerfile swaps it for the
+# headless build of the same version afterwards (no X11 / GL libraries in the image).
+opencv-python-headless==5.0.0.93
+numpy==2.2.6
+pandas==2.3.3
+pillow==12.3.0
+streamlit==1.65.0
+ultralytics==8.4.178
+sahi==0.12.8
+# Mode 5 fixed slot editor: draw slots on the camera image (0.10+ = Fabric.js v6 rewrite, needs streamlit>=1.53)
+streamlit-drawable-canvas==0.13.0
+# FastAPI backend (api/main.py): REST + WebSocket for the React app; uvicorn[standard] brings websockets
+fastapi==0.151.0
+uvicorn[standard]==0.54.0
+# the backend's client for go2rtc (WebRTC signalling is proxied, go2rtc is never published)
+httpx==0.28.1
+# camera registry in PostgreSQL (compose service "db"); without CARPARK_DATABASE_URL a cameras.json file is used
+psycopg[binary]==3.3.6

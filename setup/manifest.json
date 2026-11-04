@@ -1,0 +1,43 @@
+{
+  "generated": "2026-10-23",
+  "note": "Every code pin is a git commit / HF revision / PyPI version at least 14 days old on the generation date. Every weight file is verified against sha256 and size at image build (setup/fetch_weights.py); the build fails on any mismatch. The depth sha256 equals the value Hugging Face publishes for the LFS object; the SAM 2.1 and GeoCalib hashes were computed on 2026-10-23 from the official download URLs.",
+  "models": {
+    "sam2": {
+      "title": "SAM 2.1 Hiera Small (click -> ground mask, once per camera setup)",
+      "license": "Apache-2.0",
+      "code": {"repo": "https://github.com/facebookresearch/sam2", "commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4", "date": "2024-12-16"},
+      "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
+      "files": [
+        {"path": "sam2.1_hiera_small.pt",
+         "url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt",
+         "sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38", "bytes": 184416285}
+      ]
+    },
+    "geocalib": {
+      "title": "GeoCalib pinhole (single-image focal length + gravity)",
+      "license": "Apache-2.0 (code); the weights carry their own CC BY 4.0 licence (credit: Veicht, Sarlin, Lindenberger, Pollefeys, ECCV 2024)",
+      "code": {"repo": "https://github.com/cvg/GeoCalib", "commit": "97b8968e7798a66bf04fcf791fb535624241bda7", "date": "2026-06-28"},
+      "files": [
+        {"path": "geocalib-pinhole.tar",
+         "url": "https://github.com/cvg/GeoCalib/releases/download/v1.0/geocalib-pinhole.tar",
+         "sha256": "86d6aeacd8bbd974c59ce39f61854e00d36911c732ad89be471476fd708722ac", "bytes": 116074121}
+      ]
+    },
+    "depth": {
+      "title": "Depth Anything V2 Metric-Outdoor Small (cross-check of the camera height)",
+      "license": "Apache-2.0",
+      "code": {"repo": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf", "commit": "fd2c22027eaf20374204f14099b8341e1925ad39", "date": "2024-08-27"},
+      "files": [
+        {"path": "model.safetensors",
+         "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf/resolve/fd2c22027eaf20374204f14099b8341e1925ad39/model.safetensors",
+         "sha256": "ad065c77a7421ca55159a1f0db9433397a607690f2d76bb8a6fc54b1be7a3124", "bytes": 99173660},
+        {"path": "config.json",
+         "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf/resolve/fd2c22027eaf20374204f14099b8341e1925ad39/config.json",
+         "sha256": "3417ccb9df6fafe7e03c46583db7185d15e8ad4f5bbbdd28295bb06cfb132b48", "bytes": 1063},
+        {"path": "preprocessor_config.json",
+         "url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Metric-Outdoor-Small-hf/resolve/fd2c22027eaf20374204f14099b8341e1925ad39/preprocessor_config.json",
+         "sha256": "533b16a60445d7cab5086d39b45f92be45624b977972c62d5984d93e98366063", "bytes": 437}
+      ]
+    }
+  }
+}

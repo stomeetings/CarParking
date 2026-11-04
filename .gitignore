@@ -1,0 +1,25 @@
+# secrets
+.env
+# runtime data (mounted into the container, never committed)
+data/
+parking_history.db
+dataset_raw/
+config/fixed_slots.json
+# training data, runs, large weights
+datasets/
+runs/
+yolov8x.pt
+__pycache__/
+*.pyc
+logs/
+frontend/node_modules/
+frontend/dist/
+# local backups, recordings, stray artefacts
+backups/
+recordings/
+node_modules/
+*.db
+*.db-journal
+yolov8n.pt
+yolov8s.pt
+*;C

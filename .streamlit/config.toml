@@ -1,0 +1,5 @@
+# The project is bind-mounted from Windows into the container (/app). File-change events don't cross that mount, so
+# Streamlit's default watcher misses edits to src/carparking/*.py and keeps the old modules imported (e.g.
+# "SlotTracker.__init__() got an unexpected keyword argument"). Polling sees the edits and reloads changed modules.
+[server]
+fileWatcherType = "poll"

@@ -1,0 +1,15 @@
+# Build context = only what the Dockerfile copies. Everything else (data, datasets, training runs, secrets) stays out.
+*
+!src/
+!scripts/
+!api/
+!frontend/
+frontend/node_modules/
+frontend/dist/
+!tests/
+!app.py
+!requirements.txt
+!yolov8s.pt
+!models/
+**/__pycache__/
+**/*.pyc

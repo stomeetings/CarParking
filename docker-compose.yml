@@ -1,0 +1,131 @@
+# YOLO Smart Parking. Settings and secrets come from .env (template: .env.example).
+#   docker compose up -d --build     build (runs the test suite) and start everything
+#   docker compose logs -f worker    follow the monitoring loop
+#   docker compose down              stop (data in CARPARK_DATA_DIR is kept)
+# worker: camera -> slot tracking -> entry/exit history (scripts/worker.py), independent of any browser
+# api:    FastAPI REST + WebSocket and the React app (api/main.py)            http://<host>:${CARPARK_API_PORT:-8080}
+# ui:     the Streamlit page, kept as backup / comparison / demo              http://<host>:${CARPARK_PORT:-8501}
+# go2rtc: the cameras as WebRTC video for the React app (internal; media on port 8555)
+# sync:   every camera's history SQLite -> PostgreSQL (sessions, events, camera state, occupancy; retention policy)
+# setup:  Phase 2 camera setup (SAM 2.1, GeoCalib, Depth Anything V2), ON DEMAND ONLY: docker compose --profile setup up -d setup
+# db:     PostgreSQL: the camera registry, slot coordinates, and the central history & analytics (volume "pgdata")
+# worker, api and ui share the history database in /data (settings, heartbeat, images, history): both UIs read and
+# write the same settings.
+
+x-app: &app
+  build:
+    context: .
+    target: runtime
+  image: stomeetings/carparking:${CARPARK_TAG:-local}
+  env_file: .env
+  volumes:
+    # one host folder for all persistent data: parking_history.db, config/fixed_slots.json, dataset_raw/
+    - ${CARPARK_DATA_DIR:-./data}:/data
+  restart: unless-stopped
+
+services:
+  worker:
+    <<: *app
+    # one worker process per registered camera (scripts/supervisor.py starts, restarts and stops them)
+    command: ["python", "scripts/supervisor.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 20s  # SIGTERM: every camera's worker releases its lease, the pages show "worker down" at once
+    healthcheck:
+      # every camera's heartbeat younger than 60 s (each beats about every second, also while monitoring is off)
+      test: ["CMD", "python", "scripts/supervisor.py", "--check", "--max-age", "60"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+  sync:
+    <<: *app
+    # every camera's history (SQLite, written by its worker) -> PostgreSQL: sessions, events, camera state,
+    # occupancy samples; retention policy (scripts/sync.py). Reads the SQLite files only.
+    command: ["python", "scripts/sync.py"]
+    depends_on:
+      db:
+        condition: service_healthy
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "scripts/sync.py", "--check", "--max-age", "60"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  api:
+    <<: *app
+    command: ["uvicorn", "--factory", "api.main:create_app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${CARPARK_API_PORT:-8080}:8000"
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  ui:
+    <<: *app
+    environment:
+      CARPARK_WORKER: external  # the worker service runs the loop; the page never starts one itself
+    ports:
+      - "${CARPARK_PORT:-8501}:8501"
+    stop_grace_period: 10s
+    # health: the image's HEALTHCHECK (Streamlit's /_stcore/health)
+
+  go2rtc:
+    image: alexxit/go2rtc:1.9.14
+    env_file: .env
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+    # its API (1984) stays inside the compose network: the browser signals WebRTC through the api service
+    # (POST /api/webrtc, viewer token), so nobody on the LAN can open the camera through go2rtc directly
+    ports:
+      - "8555:8555/tcp"  # WebRTC media (only reachable after signalling through the api)
+      - "8555:8555/udp"
+    restart: unless-stopped
+
+  setup:
+    # Phase 2 (docs/PHASE2_GEOMETRY_PLAN.md): the heavy models for onboarding a camera, in their own image. NOT started by
+    # `docker compose up`; start it only while an Admin sets a camera up:
+    #   docker compose --profile setup build setup          (once; downloads and sha256-verifies ~400 MB of weights)
+    #   docker compose --profile setup up -d setup          ...and `docker compose stop setup` when done
+    # The api talks to it on the compose network (CARPARK_SETUP_URL, default http://setup:8100) and only when
+    # CARPARK_GEOMETRY_ENABLED is on. It gets no .env (no camera passwords, no tokens), no /data and no published port.
+    profiles: ["setup"]
+    build:
+      context: .
+      dockerfile: setup/Dockerfile
+    image: stomeetings/carparking-setup:${CARPARK_TAG:-local}
+    restart: "no"
+    stop_grace_period: 5s
+    # a Full slot suggestion (SAM + GeoCalib on a still) must not starve the monitoring workers of CPU while it runs
+    cpus: "2"
+
+  db:
+    image: postgres:17.7-alpine
+    environment:
+      POSTGRES_DB: carparking
+      POSTGRES_USER: carparking
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # not published: only the compose services reach it. To inspect it from this host, add
+    #   ports: ["127.0.0.1:5432:5432"]   (or: docker compose exec db psql -U carparking)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U carparking -d carparking"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:  # PostgreSQL's files (a named volume: Windows bind mounts break its file permissions)

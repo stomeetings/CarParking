@@ -1,0 +1,13 @@
+# Build context of the setup image only: what setup/Dockerfile copies. (The main image's .dockerignore does not let
+# setup/ into its context at all, so nothing here can end up in the worker / api / ui image.)
+*
+!setup/requirements.txt
+!setup/manifest.json
+!setup/fetch_weights.py
+!setup/models.py
+!setup/service.py
+!setup/test_service.py
+!src/carparking/__init__.py
+!src/carparking/geometry/
+**/__pycache__/
+**/*.pyc
