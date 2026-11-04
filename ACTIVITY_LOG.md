@@ -3037,3 +3037,7 @@ nearest generated bay. Snapshot to roll back to: `C:\F\Backups\CarParking\202610
 - Cause: the `Fold` section that holds the picture and the controls (`SampleSession.tsx`) had `overflow-hidden`. An ancestor with overflow other than visible becomes the sticky element's scroll container, and that section never scrolls, so `sticky top-2` never engaged and the picture scrolled away with the page.
 - Fix: `Fold` uses `overflow-clip` (same rounded-corner clipping, but it does not make a scroll container). The scrolling ancestor is now `<main class="overflow-y-auto">` (App.tsx), which is what the picture sticks to. A test walks the picture card's ancestors and fails if one clips with overflow hidden / auto / scroll.
 - Verified: vitest 281/281, tsc clean, built CSS has `.overflow-clip{overflow:clip}`. Not checked in a real browser; not deployed, not committed.
+
+## 168 — Status after items 160-167
+- Committed and pushed to GitHub `main`: `620b08d` (160-163) and `a912365` (164-167). The "not committed" notes in items 164-167 are out of date; "not deployed" still holds.
+- Pending (needs the user's go-ahead): deploy `api` + `ui` (`docker compose build api`, then `docker compose up -d --no-deps api ui`); look at the sticky picture (item 167) and the cover pass (item 163) in a real browser after deploy; the occupancy fix was only checked on a synthetic case, the user's own screenshot case is not reproduced; optional removal of `models/*.pt` from the repo history.
