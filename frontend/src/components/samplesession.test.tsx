@@ -389,6 +389,35 @@ describe("drawing fixed slots for the direct bay model", () => {
     expect(screen.getByTestId("draw-note").textContent).toContain("Loaded your saved 13");
   });
 
+  it("the Edit bays panel works on the drawn slots: whole-map turn, move along, split, Undo / Redo (Ctrl+Z / Ctrl+Y)", async () => {
+    localStorage.clear();
+    await open();
+    expect(screen.queryByTestId("draw-fine")).toBeNull(); // nothing drawn yet
+    fireEvent.click(screen.getByTestId("draw-preset"));
+    expect(screen.getByTestId("draw-fine").textContent).toContain("Whole map");
+    const first = () => screen.getAllByTestId("draw-slot")[0].querySelector("polygon")!.getAttribute("points");
+    const before = first();
+    fireEvent.click(screen.getAllByTestId("draw-row-edit")[0]);
+    fireEvent.click(screen.getByTestId("draw-fine-right"));
+    expect(first()).not.toBe(before);
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    expect(first()).toBe(before); // Ctrl+Z
+    fireEvent.keyDown(window, { key: "y", ctrlKey: true });
+    expect(first()).not.toBe(before); // Ctrl+Y
+    fireEvent.click(screen.getByTestId("draw-split-width"));
+    expect(screen.getAllByTestId("draw-slot")).toHaveLength(13);
+    fireEvent.click(screen.getByTestId("draw-undo-edit"));
+    expect(screen.getAllByTestId("draw-slot")).toHaveLength(12);
+    fireEvent.click(screen.getByTestId("draw-turn-cw")); // the whole map turns as one block
+    const turned = screen.getAllByTestId("draw-slot").map((g) => g.querySelector("polygon")!.getAttribute("points"));
+    fireEvent.click(screen.getByTestId("draw-undo-edit"));
+    expect(screen.getAllByTestId("draw-slot").map((g) => g.querySelector("polygon")!.getAttribute("points"))).not.toEqual(turned);
+    fireEvent.click(screen.getByTestId("draw-clear")); // even Clear all can be taken back
+    expect(screen.queryAllByTestId("draw-slot")).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("draw-undo-edit"));
+    expect(screen.getAllByTestId("draw-slot")).toHaveLength(12);
+  });
+
   it("offers the vehicle detectors too once slots are drawn, sends the chosen model, and goes back to bay models only when switched off", async () => {
     const net = await open();
     const pick = screen.getByTestId("direct-model");
@@ -748,6 +777,93 @@ describe("zones: add next bays and edit them", () => {
     const a1 = put.body!.slots.find((b: { id: number }) => b.id === 101);
     expect(a1.poly[0][0]).toBeCloseTo(0.205, 4);
     expect(Math.abs(a1.poly[0][1] - 0.5)).toBeCloseTo(0.01, 3);
+  });
+
+  it("Whole zone turn swings every bay AND the zone's outline as one block (each bay's own turn stays separate); the outline is saved with the bays; Undo / Redo bring it back", async () => {
+    const net = await ready(serve());
+    fireEvent.change(screen.getByTestId("zone-turn-step"), { target: { value: "2" } });
+    fireEvent.click(screen.getByTestId("zone-turn-cw")); // no bay selected: the whole zone does not need one
+    fireEvent.click(screen.getByTestId("zone-turn-cw"));
+    expect(screen.getByTestId("zone-undo-edit").textContent).toContain("(2)");
+    fireEvent.click(screen.getByTestId("zone-undo-edit")); // 2 deg left
+    expect(screen.getByTestId("zone-redo-edit").textContent).toContain("(1)");
+    fireEvent.click(screen.getByTestId("zone-redo-edit")); // 4 deg
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    const [a1, a2] = [101, 102].map((id) => put.body!.slots.find((b: { id: number }) => b.id === id));
+    const out = put.body!.outline as number[][];
+    expect(out).toHaveLength(4);
+    expect(out[0]).not.toEqual([0.1, 0.9]); // the outline turned with the bays
+    expect(put.body!.polygon).toEqual(out);
+    // a rigid turn: the distance between the two bays' first corners (in pixels of a 2000 x 1000 picture) is as before
+    const d = (a: number[], b: number[]) => Math.hypot((a[0] - b[0]) * 2000, (a[1] - b[1]) * 1000);
+    expect(d(a1.poly[0], a2.poly[0])).toBeCloseTo(d([0.2, 0.5], [0.3, 0.5]), 0);
+    expect(a1.poly[0]).not.toEqual([0.2, 0.5]);
+    const order = net.calls.filter((c) => /zones\/1\/slots$|\/run$/.test(c.url)).map((c) => c.url.split("/").pop());
+    expect(order).toEqual(["slots", "run"]);
+  });
+
+  it("Back edge: the whole zone's back edge moves on its own (bays and outline), the front stays; saved with the bays; Undo brings it back", async () => {
+    const net = await ready(serve());
+    fireEvent.change(screen.getByTestId("zone-fine-step"), { target: { value: "10" } });
+    fireEvent.click(screen.getByTestId("zone-depth-down")); // the mock bays: front edge y 0.5, back edge y 0.6 (the back is DOWN here): 'down' = 10 px of 1000 = 0.01 shallower? it follows the picture, not the bay
+    fireEvent.click(screen.getByTestId("zone-depth-more"));
+    expect(screen.getByTestId("zone-undo-edit").textContent).toContain("(2)");
+    fireEvent.click(screen.getByTestId("zone-undo-edit"));
+    fireEvent.click(screen.getByTestId("zone-redo-edit"));
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    const a1 = put.body!.slots.find((b: { id: number }) => b.id === 101);
+    expect(a1.poly[0]).toEqual([0.2, 0.5]); // the front corners did not move
+    expect(a1.poly[1]).toEqual([0.3, 0.5]);
+    expect(a1.poly[3][1]).not.toBeCloseTo(0.6, 3); // the back edge did
+    const out = put.body!.outline as number[][];
+    expect(out).toHaveLength(4);
+    expect(out).not.toEqual([[0.1, 0.9], [0.4, 0.9], [0.4, 0.4], [0.1, 0.4]]); // the outline followed the depth change (its corners are not all on the bays' front line)
+    expect(put.body!.polygon).toEqual(out);
+  });
+
+  it("the Edit bays sections fold (closed ones stay mounted and working), Fold all / Open all, the whole panel folds, and the picture is pinned in view (switchable)", async () => {
+    await ready(serve());
+    const body = (id: string) => screen.getByTestId(`zone-sec-${id}-body`) as HTMLElement;
+    expect(body("move").hidden).toBe(false); // the short list open by default
+    expect(body("turn").hidden).toBe(false);
+    expect(body("depth").hidden).toBe(true);
+    expect(body("size").hidden).toBe(true);
+    fireEvent.click(screen.getByTestId("zone-sec-depth")); // open one
+    expect(body("depth").hidden).toBe(false);
+    fireEvent.click(screen.getByTestId("zone-open-all"));
+    expect(["move", "turn", "depth", "size", "split"].every((id) => !body(id).hidden)).toBe(true);
+    fireEvent.click(screen.getByTestId("zone-fold-all"));
+    expect(["move", "turn", "depth", "size", "split"].every((id) => body(id).hidden)).toBe(true);
+    expect(screen.getByTestId("zone-undo-edit")).toBeTruthy(); // Undo / Redo and the step stay in view
+    fireEvent.click(screen.getByTestId("zone-fine-step"));
+    fireEvent.click(screen.getAllByTestId("zone-bay-edit")[0]);
+    fireEvent.click(screen.getByTestId("zone-fine-wider")); // a folded section still works
+    expect(screen.getByTestId("zone-undo-edit").textContent).toContain("(1)");
+    fireEvent.click(screen.getByTestId("zone-fine-toggle")); // fold the whole panel
+    expect((screen.getByTestId("zone-fine-body") as HTMLElement).hidden).toBe(true);
+    expect(screen.getByTestId("zone-fine-toggle").textContent).toContain("1 edit(s)");
+    fireEvent.click(screen.getByTestId("zone-fine-toggle"));
+    expect((screen.getByTestId("zone-fine-body") as HTMLElement).hidden).toBe(false);
+    // the picture's card is pinned (sticky) until switched off
+    const card = () => screen.getByTestId("sess-stage").closest("section")!;
+    expect(card().className).toContain("sticky");
+    // sticky only works when no ancestor up to the scrolling <main> clips with overflow hidden / auto / scroll (that ancestor would become its scroll container)
+    for (let el = card().parentElement; el && el.tagName !== "BODY"; el = el.parentElement) {
+      expect(el.className, `${el.tagName}.${el.className}`).not.toMatch(/overflow-(hidden|auto|scroll|x-|y-)/);
+    }
+    fireEvent.click(screen.getByText("Keep in view"));
+    expect(card().className).not.toContain("sticky");
+  });
+
+  it("a whole-zone turn that would push a corner off the picture says so and changes nothing", async () => {
+    await ready(serve());
+    fireEvent.change(screen.getByTestId("zone-turn-step"), { target: { value: "5" } });
+    for (let i = 0; i < 40; i++) fireEvent.click(screen.getByTestId("zone-turn-cw")); // 200 degrees: it must stop at the picture's edge
+    expect(screen.getByTestId("zone-fine-note").textContent).toContain("cannot turn further");
   });
 });
 

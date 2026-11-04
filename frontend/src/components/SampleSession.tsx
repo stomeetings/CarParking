@@ -2,9 +2,10 @@ import { ChevronDown, ChevronRight, Crosshair, FlaskConical, Hand, ImageUp, Load
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ApiError, api } from "../api";
 import { points } from "../lib";
-import { resizeBay, rotateBay, shiftAlong, shiftBays, splitBay, tuneBays } from "../bayfine";
+import { type DepthSpec, depthGroup, groupCentre, inFrame, rotateGroup, turnPoints } from "../bayfine";
 import { type DrawnSlot, type Pt, area, moveSlot, moveVertex, pt } from "../slotdraw";
 import { type Expected, ExpectedInputs, type Layer, LayerBoxes, MAX_BYTES, ResultPanel, type SampleResult, readFile } from "./SampleResult";
+import { BayAdjust, useBayHistory } from "./BayAdjust";
 import { DirectSlotCanvas } from "./DirectSlotCanvas";
 import { Button, Card, Pill } from "./ui";
 import { MAX_ZOOM, MIN_ZOOM, useZoomPan } from "./useZoomPan";
@@ -51,6 +52,8 @@ const SLIDERS: { key: Exclude<keyof Tune, "model">; label: string; min: number; 
 interface Service { service: "up" | "down"; loaded: unknown; command: string }
 type Mode = "pins" | "ref" | "polygon" | "sam" | "edit" | "zone-outline" | "zone-sam";
 /** A zone being set up on the page: its outline (drawn), SAM's clicks in it and SAM's surface inside it (or none: the outline is the surface). */
+/** What Undo / Redo put back: the zones' bays and which of them are unsaved, and each zone's outline and SAM ground (a whole-zone turn moves them). */
+interface EditSnap { merge: ZoneMerge; dirty: number[]; shapes: Record<number, { outline: Pt[]; surface: Pt[] | null }> }
 interface ZoneDraft { id: number; name: string; outline: Pt[]; sam: { p: Pt; keep: boolean }[]; surface: Pt[] | null; rows: number }
 /** A zone the server calibrated (its own GeoCalib / pins run and grid): GET session `zones`. */
 interface ZoneCal { zone: number; name: string; polygon: Pt[]; calibration: Calibration; slots: DrawnSlot[] }
@@ -77,7 +80,7 @@ function DynamicToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) =
 /** A section that opens and closes. Its content stays mounted while closed (hidden), so a half-done calibration or drawing is not lost. */
 function Fold({ id, title, open, onToggle, children }: { id: string; title: React.ReactNode; open: boolean; onToggle: () => void; children: React.ReactNode }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-line bg-white shadow-sm" data-testid={`fold-${id}`}>
+    <section className="overflow-clip rounded-lg border border-line bg-white shadow-sm" data-testid={`fold-${id}`}>
       <h2 className={`px-4 py-2.5 text-sm font-semibold text-ink ${open ? "border-b border-line" : ""}`}>
         <button type="button" className="flex w-full items-center gap-2 text-left" onClick={onToggle} aria-expanded={open} data-testid={`fold-${id}-toggle`}>
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}{title}
@@ -136,10 +139,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const [zoneDirty, setZoneDirty] = useState<number[]>([]); // zones whose bays were moved / reshaped here and not saved yet
   const [nextN, setNextN] = useState("3");
   const [dynamic, setDynamic] = useState(false); // dynamic slots (bays for vehicles off the layout, sub-bays, footprint claim): only when switched on
+  const [pinned, setPinned] = useState(true); // the picture stays at the top of the screen while the controls scroll
   const [zoneNote, setZoneNote] = useState<string | null>(null);
-  const [fineTarget, setFineTarget] = useState<"bay" | "zone">("bay"); // fine adjustment: the selected bay, or every bay of the active zone
-  const [fineStep, setFineStep] = useState(1); // pixels per arrow press (Shift: five times)
-  const [undo, setUndo] = useState<{ merge: ZoneMerge; dirty: number[] }[]>([]); // the bay edits made here (drag, fine adjustment, split), newest last
 
   const fail = useCallback((e: unknown, what: string, retry?: () => void) => {
     const err = e as ApiError;
@@ -148,7 +149,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   }, [onNeedAdmin]);
 
   const reset = () => {
-    setZones([]); setActiveZone(null); setMerge({ zones: [], zone_slots: [], zone_dropped: [] }); setSkip([]); setZoneDirty([]); setZoneNote(null); setUndo([]);
+    setZones([]); setActiveZone(null); setMerge({ zones: [], zone_slots: [], zone_dropped: [] }); setSkip([]); setZoneDirty([]); setZoneNote(null); history.clear();
     setDirect(null); setShown(null); setUseDrawn(false); setDrawn([]); setPins([]); setRef([]); setSel(null); setJob(null); setResult(null); setMessage(null);
     setMode(method === "rectangle" ? "pins" : "ref");
   };
@@ -195,7 +196,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       if (r.zone != null && r.slots) {
         const zid = r.zone;
         setMerge({ zones: r.zones ?? [], zone_slots: r.zone_slots ?? [], zone_dropped: r.zone_dropped ?? [] });
-        setUndo([]);
+        history.clear();
         setZoneDirty((d) => d.filter((x) => x !== zid)); // a new calibration replaces the zone's edited bays
         setMode("edit");
       } else if (r.zone != null && r.polygon) {
@@ -298,7 +299,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       try {
         const m = await api.delete<ZoneMerge>(`${BASE}/${session.id}/zones/${id}`);
         setMerge(m);
-        setUndo([]); // (the zone is gone: older snapshots would bring it back)
+        history.clear(); // (the zone is gone: older snapshots would bring it back)
       } catch (e) {
         return fail(e, "Removing the zone");
       }
@@ -344,7 +345,9 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       const z = merge.zones.find((x) => x.zone === zid);
       if (!z) continue;
       try {
-        setMerge(await api.put<ZoneMerge>(`${BASE}/${session.id}/zones/${zid}/slots`, { slots: z.slots }));
+        const draft = zones.find((x) => x.id === zid);
+        const shape = draft && draft.outline.length >= 3 ? { outline: draft.outline, polygon: draft.surface ?? draft.outline } : {}; // (a whole-zone turn moved them)
+        setMerge(await api.put<ZoneMerge>(`${BASE}/${session.id}/zones/${zid}/slots`, { slots: z.slots, ...shape }));
       } catch (e) {
         fail(e, `Saving ${z.name}'s bays`);
         return false;
@@ -362,7 +365,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       if (!(await saveZones())) return;
       const r = await api.post<ZoneMerge & { added: number; note: string | null }>(`${BASE}/${session.id}/zones/${zid}/extend`, { count });
       setMerge({ zones: r.zones, zone_slots: r.zone_slots, zone_dropped: r.zone_dropped });
-      setUndo([]); // (the server added bays: an older snapshot would drop them)
+      history.clear(); // (the server added bays: an older snapshot would drop them)
       setZoneNote(r.note);
     } catch (e) {
       fail(e, "Adding the next bays");
@@ -400,72 +403,50 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const calOf = (id: number) => merge.zones.find((z) => z.zone === id) ?? null;
   const bays = merge.zone_slots.filter((b) => !skip.includes(b.id));
   // ---- fine adjustment of laid bays (the generation is not touched): arrow keys / buttons shift, the size and turn buttons tune the selected bay or the whole active zone
-  const fineIds = (): number[] => (fineTarget === "zone" ? bays.filter((b) => Math.floor(b.id / 100) === activeZone).map((b) => b.id) : bays.filter((b) => b.id === sel).map((b) => b.id));
-  const pushUndo = () => setUndo((u) => [...u.slice(-49), { merge, dirty: zoneDirty }]);
-  const undoEdit = () => {
-    const last = undo[undo.length - 1];
-    if (!last) return;
-    setUndo((u) => u.slice(0, -1));
-    setMerge(last.merge);
-    setZoneDirty((d) => [...new Set([...d, ...last.dirty, ...last.merge.zones.map((z) => z.zone)])]); // (the server holds the edited bays: save the restored ones over them)
+  // ---- Edit bays: the shared panel (BayAdjust) works on the bays on screen; its edits are written back to the merged list and to each zone's own list, which is what gets saved
+  const commitBays = (next: DrawnSlot[]) => {
+    const all = [...next, ...merge.zone_slots.filter((b) => skip.includes(b.id))]; // (removed bays stay out of the panel but are not lost)
+    const was = new Map(merge.zone_slots.map((b) => [b.id, JSON.stringify(b)]));
+    const touched = new Set<number>();
+    for (const b of all) if (was.get(b.id) !== JSON.stringify(b)) touched.add(Math.floor(b.id / 100));
+    for (const id of was.keys()) if (!all.some((b) => b.id === id)) touched.add(Math.floor(id / 100));
+    setMerge((m) => ({ ...m, zone_slots: all, zones: m.zones.map((z) => (touched.has(z.zone)
+      ? { ...z, slots: [...all.filter((b) => Math.floor(b.id / 100) === z.zone), ...z.slots.filter((b) => !m.zone_slots.some((x) => x.id === b.id))] } : z)) }));
+    setZoneDirty((d) => [...d, ...[...touched].filter((z) => !d.includes(z))]);
   };
-  const applyFine = (next: DrawnSlot[], ids: number[]) => {
-    pushUndo();
-    const changed = next.filter((b) => ids.includes(b.id));
-    const zs = [...new Set(changed.map((b) => Math.floor(b.id / 100)))];
-    setMerge((m) => ({ ...m, zone_slots: m.zone_slots.map((b) => changed.find((c) => c.id === b.id) ?? b),
-                       zones: m.zones.map((z) => (zs.includes(z.zone) ? { ...z, slots: z.slots.map((b) => changed.find((c) => c.id === b.id) ?? b) } : z)) }));
-    setZoneDirty((d) => [...d, ...zs.filter((z) => !d.includes(z))]);
+  // the active zone turned as one block: its bays, its outline and its SAM ground about the middle of the outline (or of its bays)
+  const turnActiveZone = (deg: number): boolean => {
+    if (!az) return false;
+    const mine = bays.filter((b) => Math.floor(b.id / 100) === az.id);
+    const centre = az.outline.length >= 3 ? groupCentre([az.outline]) : groupCentre(mine.map((b) => b.poly));
+    const next = rotateGroup(merge.zone_slots, mine.map((b) => b.id), w, h, deg, centre);
+    const outline = turnPoints(az.outline, centre, w, h, deg);
+    const surface = az.surface ? turnPoints(az.surface, centre, w, h, deg) : null;
+    if (!next || !inFrame(outline) || (surface && !inFrame(surface))) return false;
+    commitBays(next.filter((b) => !skip.includes(b.id)));
+    if (az.outline.length) setZone(az.id, { outline, surface });
+    return true;
   };
-  const fineShift = (dxPx: number, dyPx: number) => {
-    const ids = fineIds();
-    if (ids.length) applyFine(shiftBays(merge.zone_slots, ids, dxPx / w, dyPx / h), ids);
+  // the active zone's back edge moved on its own: bays, outline and SAM ground share the depth change, the front line stays
+  const depthActiveZone = (spec: DepthSpec): boolean => {
+    if (!az) return false;
+    const mine = bays.filter((b) => Math.floor(b.id / 100) === az.id).map((b) => b.id);
+    const r = depthGroup(merge.zone_slots, mine, w, h, spec, [az.outline, az.surface ?? []]);
+    if (!r) return false;
+    commitBays(r.slots.filter((b) => !skip.includes(b.id)));
+    if (az.outline.length) setZone(az.id, { outline: r.extra[0], surface: az.surface ? r.extra[1] : null });
+    return true;
   };
-  const fineAlong = (across: number, along: number) => {
-    const ids = fineIds();
-    if (ids.length) applyFine(shiftAlong(merge.zone_slots, ids, w, h, across, along), ids);
-  };
-  const fineTune = (fn: (poly: Pt[]) => Pt[]) => {
-    const ids = fineIds();
-    if (ids.length) applyFine(tuneBays(merge.zone_slots, ids, fn), ids);
-  };
-  // split the selected bay in two (a bay laid across two cars): side by side, or front to back; the second part gets the zone's next free id
-  const splitSelected = (axis: "width" | "length") => {
-    const b = merge.zone_slots.find((x) => x.id === sel);
-    if (!b) return;
-    const zid = Math.floor(b.id / 100);
-    const used = new Set(merge.zone_slots.filter((x) => Math.floor(x.id / 100) === zid).map((x) => x.id));
-    const free = Array.from({ length: 99 }, (_, i) => zid * 100 + i + 1).find((id) => !used.has(id));
-    if (free === undefined) return setZoneNote("This zone already has 99 bays: remove one first.");
-    const [p1, p2] = splitBay(b.poly, axis, 2);
-    if (!p2) return setZoneNote("This bay cannot be split: it is not a four-cornered bay.");
-    setZoneNote(null);
-    const first = { ...b, name: `${b.name}a`, poly: p1 };
-    const second = { ...b, id: free, name: `${b.name}b`, poly: p2 };
-    pushUndo();
-    const cut = (all: DrawnSlot[]) => all.flatMap((x) => (x.id === b.id ? [first, second] : [x]));
-    setMerge((m) => ({ ...m, zone_slots: cut(m.zone_slots), zones: m.zones.map((z) => (z.zone === zid ? { ...z, slots: cut(z.slots) } : z)) }));
-    setZoneDirty((d) => (d.includes(zid) ? d : [...d, zid]));
-  };
-  useEffect(() => {
-    if (mode !== "edit") return;
-    const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return; // typing is not nudging
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
-        if (undo.length) (e.preventDefault(), undoEdit());
-        return;
-      }
-      const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
-      if (!d || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (!fineIds().length) return;
-      e.preventDefault();
-      const k = fineStep * (e.shiftKey ? 5 : 1);
-      fineShift(d[0] * k, d[1] * k);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+  const history = useBayHistory<EditSnap>({ merge, dirty: zoneDirty, shapes: Object.fromEntries(zones.map((z) => [z.id, { outline: z.outline, surface: z.surface }])) }, (v) => {
+    setMerge(v.merge);
+    setZoneDirty((d) => [...new Set([...d, ...v.dirty, ...v.merge.zones.map((z) => z.zone)])]); // (the server holds the edited bays: save the restored ones over them)
+    setZones((all) => all.map((z) => (v.shapes[z.id] ? { ...z, ...v.shapes[z.id] } : z)));
   });
+  const nextZoneId = (b: DrawnSlot, all: DrawnSlot[]): number | null => {
+    const zid = Math.floor(b.id / 100);
+    const used = new Set(all.filter((x) => Math.floor(x.id / 100) === zid).concat(merge.zone_slots).map((x) => x.id));
+    return Array.from({ length: 99 }, (_, i) => zid * 100 + i + 1).find((id) => !used.has(id)) ?? null;
+  };
   const zonesCard = () => (
     <>
       <Card title={`2 · Zones (${zones.length})`}>
@@ -548,49 +529,11 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                   <Button variant={mode === "edit" ? "primary" : "outline"} onClick={() => setMode("edit")} data-testid="zone-edit-mode">Edit bays</Button>
                   <p className="text-xs text-muted">Edit bays: click a bay to select it, drag it to move it, drag its corners to reshape it. Edits are saved before the next bays are added and before the run.</p>
                   {mode === "edit" && (
-                    <div className="space-y-1.5 rounded-md border border-line p-2" data-testid="zone-fine">
-                      <p className="text-xs font-semibold">Select zone &amp; slot adjustment</p>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Pill active={fineTarget === "bay"} onClick={() => setFineTarget("bay")} title="The bay selected in the list or on the picture">Selected bay{sel != null ? ` (${bays.find((b) => b.id === sel)?.name ?? "—"})` : ""}</Pill>
-                        <Pill active={fineTarget === "zone"} onClick={() => setFineTarget("zone")} title="Every bay of the active zone, moved or tuned together">Whole {az.name}</Pill>
-                        <label className="ml-auto flex items-center gap-1 text-xs">Step
-                          <select className="rounded-md border border-line px-1 py-0.5" value={fineStep} onChange={(e) => setFineStep(Number(e.target.value))} data-testid="zone-fine-step">
-                            {[1, 2, 5, 10].map((n) => <option key={n} value={n}>{n} px</option>)}
-                          </select>
-                        </label>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {([["←", -1, 0, "left"], ["↑", 0, -1, "up"], ["↓", 0, 1, "down"], ["→", 1, 0, "right"]] as const).map(([t, dx, dy, id]) => (
-                          <Button key={id} variant="outline" onClick={() => fineShift(dx * fineStep, dy * fineStep)} disabled={fineIds().length === 0} data-testid={`zone-fine-${id}`} title={`Move ${id} by the step`}>{t}</Button>
-                        ))}
-                        <span className="text-xs text-muted">or the arrow keys (Shift = 5×)</span>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-xs text-muted">Along the bay:</span>
-                        {([["Row ◂", -1, 0, "row-left", "along its front, to its left"], ["Row ▸", 1, 0, "row-right", "along its front, to its right"],
-                           ["Back ↥", 0, 1, "back", "towards its back (away from the camera)"], ["Front ↧", 0, -1, "front", "towards its front (nearer the camera)"]] as const).map(([t, a, b2, id, tip]) => (
-                          <Button key={id} variant="outline" onClick={() => fineAlong(a * fineStep, b2 * fineStep)} disabled={fineIds().length === 0} data-testid={`zone-fine-${id}`} title={`Move ${tip}`}>{t}</Button>
-                        ))}
-                        <Button variant="outline" onClick={undoEdit} disabled={undo.length === 0} data-testid="zone-undo-edit" title="Take back the last bay edit (move, reshape, size, turn, split)">Undo{undo.length ? ` (${undo.length})` : ""}</Button>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 0.98, 1))} disabled={fineIds().length === 0} data-testid="zone-fine-narrower" title="2 % narrower along its front">Narrower</Button>
-                        <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 1.02, 1))} disabled={fineIds().length === 0} data-testid="zone-fine-wider" title="2 % wider along its front">Wider</Button>
-                        <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 1, 0.98))} disabled={fineIds().length === 0} data-testid="zone-fine-shorter" title="2 % shorter towards its back">Shorter</Button>
-                        <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 1, 1.02))} disabled={fineIds().length === 0} data-testid="zone-fine-longer" title="2 % longer towards its back">Longer</Button>
-                        <Button variant="outline" onClick={() => fineTune((p) => resizeBay(p, w, h, 0.98, 0.98))} disabled={fineIds().length === 0} data-testid="zone-fine-shrink" title="2 % smaller all round: keeps a bay off its neighbour's car">Shrink 2 %</Button>
-                        <Button variant="outline" onClick={() => fineTune((p) => rotateBay(p, w, h, -0.5))} disabled={fineIds().length === 0} data-testid="zone-fine-ccw" title="Turn 0.5° anticlockwise">↺ 0.5°</Button>
-                        <Button variant="outline" onClick={() => fineTune((p) => rotateBay(p, w, h, 0.5))} disabled={fineIds().length === 0} data-testid="zone-fine-cw" title="Turn 0.5° clockwise">↻ 0.5°</Button>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5 border-t border-line pt-1.5">
-                        <span className="text-xs font-semibold">Split the selected bay</span>
-                        <Button variant="outline" onClick={() => splitSelected("width")} disabled={!bays.some((b) => b.id === sel)} data-testid="zone-split-width"
-                                title="Two bays side by side, left and right (equal on the ground)">Left | right</Button>
-                        <Button variant="outline" onClick={() => splitSelected("length")} disabled={!bays.some((b) => b.id === sel)} data-testid="zone-split-length"
-                                title="Two bays one behind the other, front and back (a bay laid across two cars)">Front / back</Button>
-                      </div>
+                    <>
+                      <BayAdjust slots={bays} selected={sel} group={{ ids: bays.filter((b) => Math.floor(b.id / 100) === az.id).map((b) => b.id), label: `Whole ${az.name}` }}
+                                 w={w} h={h} onChange={commitBays} history={history} ns="zone" newId={nextZoneId} rotateZone={turnActiveZone} depthZone={depthActiveZone} />
                       <p className="text-xs text-muted">Changes only the bays drawn here; the generated layout is not recalculated. They are saved before the next bays are added and before the run.</p>
-                    </div>
+                    </>
                   )}
                   {zoneNote && <p className="text-xs text-warning" data-testid="zone-note">{zoneNote}</p>}
                 </div>
@@ -746,8 +689,9 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
         <Fold id="calibrated" open={open.calibrated} onToggle={() => setOpen({ ...open, calibrated: !open.calibrated })}
               title={<span className="flex items-center gap-2"><Sparkles size={16} className="text-primary" /> GeoCalib + SAM (calibrated grid)</span>}>
         <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,1.4fr)]">
-          <Card title={<span>Picture · {w}×{h}</span>} bodyClass="p-0" actions={
+          <Card title={<span>Picture · {w}×{h}</span>} bodyClass="p-0" className={pinned ? "sticky top-2 z-20 self-start" : ""} actions={
             <>
+              <Pill active={pinned} onClick={() => setPinned(!pinned)} title="Keep the picture in view while you scroll the controls: it stays at the top of the screen, sized to leave room for them">Keep in view</Pill>
               <Pill active={panTool} onClick={() => setPanTool(!panTool)} title="Drag the picture instead of placing points (the middle mouse button does this in every mode; the wheel zooms)"><Hand size={12} /> Pan</Pill>
               <Button variant="outline" onClick={() => zoomCentre(1.5)} disabled={view.s >= MAX_ZOOM} data-testid="sess-zoom-in" title="Zoom in (or the mouse wheel)"><ZoomIn size={13} /></Button>
               <Button variant="outline" onClick={() => zoomCentre(1 / 1.5)} disabled={view.s <= MIN_ZOOM} data-testid="sess-zoom-out" title="Zoom out"><ZoomOut size={13} /></Button>
@@ -755,6 +699,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               <span className="text-xs text-muted" data-testid="sess-zoom">{Math.round(view.s * 100)} %</span>
             </>
           }>
+            <div className={pinned ? "mx-auto w-full max-w-[calc(46vh*var(--ar))] xl:max-w-[calc((100vh-7rem)*var(--ar))]" : "w-full"} style={{ "--ar": w / h } as React.CSSProperties}>
             <div ref={viewport} className="relative w-full select-none overflow-hidden bg-ink" style={{ aspectRatio: `${w} / ${h}` }} data-testid="sess-stage">
              <div ref={stage} className="absolute top-0 left-0 h-full w-full" style={{ transform, transformOrigin: "0 0" }} data-testid="sess-layer">
               <img src={session.image} alt="Sample picture" className="absolute inset-0 h-full w-full object-fill" draggable={false} />
@@ -779,14 +724,14 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                             <polygon points={points(b.poly, w, h)} fill={b.id === sel ? "rgba(79,70,229,0.25)" : `${colour}26`} stroke={b.id === sel ? "#4f46e5" : colour}
                                      strokeWidth={b.id === sel ? 2.5 : 2} vectorEffect="non-scaling-stroke" style={{ cursor: on ? (mode === "edit" ? "move" : "default") : "pointer" }}
                                      onClick={(e) => { if (!on && !panTool) (e.stopPropagation(), setActiveZone(z.id)); }}
-                                     onMouseDown={(e) => { if (on && mode === "edit" && !panTool && e.button === 0) (e.stopPropagation(), setSel(b.id), pushUndo(), setDrag({ kind: "move", id: b.id, last: at(e) })); }} />
+                                     onMouseDown={(e) => { if (on && mode === "edit" && !panTool && e.button === 0) (e.stopPropagation(), setSel(b.id), history.push(), setDrag({ kind: "move", id: b.id, last: at(e) })); }} />
                             <text x={b.poly.reduce((m, p) => m + p[0], 0) / b.poly.length * w} y={b.poly.reduce((m, p) => m + p[1], 0) / b.poly.length * h} fontSize={font * 0.8}
                                   textAnchor="middle" dominantBaseline="middle" fontWeight={700} fill="white" stroke="black" strokeWidth={font / 14} paintOrder="stroke" pointerEvents="none">{b.name}</text>
                           </g>
                         ))}
                         {on && mode === "edit" && bays.filter((b) => b.id === sel && Math.floor(b.id / 100) === z.id).flatMap((b) => b.poly.map(([x, y], i) => (
                           <circle key={`v${b.id}-${i}`} cx={x * w} cy={y * h} r={dot} fill="white" stroke="#4f46e5" strokeWidth={2} vectorEffect="non-scaling-stroke" style={{ cursor: "grab" }}
-                                  data-testid="zone-vertex" onMouseDown={(e) => { if (e.button === 0 && !panTool) (e.stopPropagation(), pushUndo(), setDrag({ kind: "vertex", id: b.id, index: i })); }} />
+                                  data-testid="zone-vertex" onMouseDown={(e) => { if (e.button === 0 && !panTool) (e.stopPropagation(), history.push(), setDrag({ kind: "vertex", id: b.id, index: i })); }} />
                         )))}
                       </g>
                     );
@@ -803,6 +748,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                 {ref.map((p, i) => <circle key={`r${i}`} cx={px(p)[0]} cy={px(p)[1]} r={dot * 1.3} fill="#f9b115" pointerEvents="none" data-testid="sess-ref" />)}
               </svg>
              </div>
+            </div>
             </div>
           </Card>
 

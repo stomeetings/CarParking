@@ -545,6 +545,12 @@ def test_a_zone_can_be_extended_by_the_next_bays_and_its_bays_edited(env, monkey
         assert len(z["slots"]) == len(a) - 1 and z["slots"][0]["poly"][0][0] == pytest.approx(a[0]["poly"][0][0] + 0.01, abs=1e-4)
         assert c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": [{**a[0], "id": 201}]}).status_code == 422  # another zone's id
         assert c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": [{**a[0], "poly": [[0, 0], [1, 1]]}]}).status_code == 422
+        # a whole-zone turn on the page sends the turned outline and ground with the bays: kept, and bad corners refused
+        turned = [[0.2, 0.3], [0.8, 0.31], [0.8, 0.7], [0.2, 0.69]]
+        r = c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": moved, "outline": turned, "polygon": turned})
+        assert r.status_code == 200, r.text
+        assert r.json()["zones"][0]["polygon"] == turned
+        assert c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": moved, "outline": [[0.1, 0.1], [1.5, 0.2], [0.5, 0.5]]}).status_code == 422
 
 
 # ---- top-down (aerial) scale: no GeoCalib; a level GeoCalib answer says what to choose -----------------------------------------------------

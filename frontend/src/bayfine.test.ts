@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resizeBay, rotateBay, shiftBays, splitBay, tuneBays } from "./bayfine";
+import { depthGroup, groupCentre, inFrame, resizeBay, rotateBay, rotateGroup, shiftBays, splitBay, tuneBays, turnPoints } from "./bayfine";
 import type { DrawnSlot, Pt } from "./slotdraw";
 
 const W = 1600;
@@ -93,5 +93,74 @@ describe("splitBay", () => {
     expect(splitBay(rect, "length", 3)).toHaveLength(3);
     expect(splitBay([[0, 0], [1, 0], [1, 1]], "width")).toHaveLength(1);
     expect(ground(quad)).toBe(quad);
+  });
+});
+
+describe("turning a whole group as one block", () => {
+  const all = [bay(1, 0.3), bay(2, 0.45), bay(3, 0.6)];
+  const dist = (a: DrawnSlot[], i: number, j: number) => len(px(a[i].poly)[0], px(a[j].poly)[0]);
+
+  it("keeps every bay's size and the spacing between bays (a rigid turn), while the grid swings about its middle", () => {
+    const turned = rotateGroup(all, [1, 2, 3], W, H, 5)!;
+    expect(dist(turned, 0, 1)).toBeCloseTo(dist(all, 0, 1), 0);
+    expect(dist(turned, 0, 2)).toBeCloseTo(dist(all, 0, 2), 0);
+    const side = (a: DrawnSlot[], i: number) => len(px(a[i].poly)[0], px(a[i].poly)[1]);
+    expect(side(turned, 1)).toBeCloseTo(side(all, 1), 0);
+    const c = (a: DrawnSlot[]) => groupCentre(a.map((s) => s.poly));
+    expect(c(turned)[0]).toBeCloseTo(c(all)[0], 3); // about its middle
+    expect(c(turned)[1]).toBeCloseTo(c(all)[1], 3);
+    expect(turned[0].poly).not.toEqual(all[0].poly);
+    // the bays turned together swing by the angle: the line through the first and last bay's corners turns 5 degrees
+    const ang = (a: DrawnSlot[]) => Math.atan2(px(a[2].poly)[0][1] - px(a[0].poly)[0][1], px(a[2].poly)[0][0] - px(a[0].poly)[0][0]);
+    expect(((ang(turned) - ang(all)) * 180) / Math.PI).toBeCloseTo(5, 1);
+  });
+
+  it("only the chosen bays turn; the other bays stay; a turn that would leave the picture changes nothing", () => {
+    const some = rotateGroup(all, [1, 2], W, H, 3)!;
+    expect(some[2]).toBe(all[2]);
+    const wide = [bay(1, 0), bay(2, 0.45), bay(3, 0.88)]; // as wide as the picture
+    expect(rotateGroup(wide, [1, 2, 3], W, H, 90)).toBeNull(); // turned a quarter: its ends leave the frame
+    expect(rotateGroup(all, [1, 2, 3], W, H, 90)).not.toBeNull(); // the narrower grid still fits
+    expect(rotateGroup(all, [1, 2, 3], W, H, 0)!.map((s) => s.poly)).toEqual(all.map((s) => s.poly));
+  });
+
+  it("turnPoints is a pixel-space turn (a 16:9 picture keeps right angles) and inFrame tells when a corner is off the picture", () => {
+    const sq: Pt[] = [[0.4, 0.4], [0.5, 0.4], [0.5, 0.5], [0.4, 0.5]];
+    const t = px(turnPoints(sq, [0.45, 0.45], W, H, 37));
+    expect(len(t[0], t[1])).toBeCloseTo(0.1 * W, 0); // the sides keep their pixel length (160 x 90), so the angle at each corner stays a right angle
+    expect(len(t[1], t[2])).toBeCloseTo(0.1 * H, 0);
+    expect(len(t[0], t[2])).toBeCloseTo(Math.hypot(0.1 * W, 0.1 * H), 0);
+    expect(inFrame(sq)).toBe(true);
+    expect(inFrame([[0.5, 0.5], [1.2, 0.5], [0.5, 0.9]])).toBe(false);
+  });
+});
+
+describe("the back edge of a group (perspective depth)", () => {
+  // a row of bays: front edge low on the picture (y 0.7), back edge higher (y 0.5); the back is up the picture
+  const row = [bay(1, 0.3), bay(2, 0.45), bay(3, 0.6)];
+  const front = (a: DrawnSlot[]) => a.flatMap((s) => [s.poly[0], s.poly[1]]);
+  const backs = (a: DrawnSlot[]) => a.flatMap((s) => [s.poly[2], s.poly[3]]);
+
+  it("moves only the back edge: the front corners stay exactly, every back corner moves up by the step, widths keep their ratio", () => {
+    const r = depthGroup(row, [1, 2, 3], W, H, { px: 18 })!; // 18 px up of 900 = 0.02
+    expect(front(r.slots)).toEqual(front(row));
+    backs(r.slots).forEach((q, i) => expect(q[1]).toBeCloseTo(backs(row)[i][1] - 0.02, 3));
+    // the side edges stay straight lines through the old front corner: the back corner moved along the bay's own side, not straight up
+    const [a, b, c] = [row[0].poly[1], row[0].poly[2], r.slots[0].poly[2]];
+    const cross = (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0]);
+    expect(Math.abs(cross)).toBeLessThan(1e-3);
+    const down = depthGroup(row, [1, 2, 3], W, H, { px: -18 })!; // pulled back down
+    backs(down.slots).forEach((q, i) => expect(q[1]).toBeCloseTo(backs(row)[i][1] + 0.02, 3));
+  });
+
+  it("a ratio scales the depth about the front line (and the extra polygons, like a zone's outline, with it); an impossible change returns null", () => {
+    const outline: Pt[] = [[0.25, 0.7], [0.8, 0.7], [0.82, 0.45], [0.27, 0.45]];
+    const r = depthGroup(row, [1, 2, 3], W, H, { k: 0.5 }, [outline])!;
+    expect(r.slots[0].poly[3][1]).toBeCloseTo(0.6, 3); // the old depth was 0.2: half of it
+    expect(r.extra[0][0]).toEqual(outline[0]); // its front corners are on the front line: unchanged
+    expect(r.extra[0][3][1]).toBeGreaterThan(0.45); // its back corners came down
+    expect(depthGroup(row, [1, 2, 3], W, H, { px: 5000 })).toBeNull(); // off the picture
+    expect(depthGroup(row, [1, 2, 3], W, H, { k: 0 })).toBeNull();
+    expect(depthGroup(row, [], W, H, { k: 1.1 })).toBeNull();
   });
 });

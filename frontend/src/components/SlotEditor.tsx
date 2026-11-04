@@ -7,6 +7,7 @@ import { CapacityField } from "./CapacityField";
 import type { CameraInfo, SettingsResponse, SlotState, Snapshot, StateMessage } from "../types";
 import { AutoGridPins } from "./AutoGridPins";
 import { SuggestSlots } from "./SuggestSlots";
+import { BayAdjust, useBayHistory } from "./BayAdjust";
 import { Button, Card, Pill, inputClass } from "./ui";
 
 type Mode = "polygon" | "rect" | "edit";
@@ -98,6 +99,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
   // the camera's native frame (pixel export): the worker's, else the snapshot's
   const size: [number, number] = snapshot?.shape ?? (still ? [still.width, still.height] : [2560, 1440]);
   const [w, h] = size;
+  const history = useBayHistory(slots, setSlots); // Undo / Redo of the edits made here (drag, panel, split, delete), 50 deep
 
   const load = useCallback(() => {
     api.get<Saved>(withCam("/api/fixed-slots", cam)).then((r) => {
@@ -105,6 +107,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
       setSaved(r);
       setCamera(r.camera);
       setSlots(r.slots);
+      history.clear();
       setDraft([]);
       setSelected(null);
     }).catch((e) => setMessage({ tone: "error", text: e.message }));
@@ -168,6 +171,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
     const r = addSlot(slots, poly);
     if (r.error) setMessage({ tone: "error", text: `Not added: ${r.error}.` });
     else {
+      history.push();
       setSlots(r.slots);
       setSelected(r.slots[r.slots.length - 1].id);
       setMessage(null);
@@ -215,6 +219,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
         e.preventDefault();
         setDraft((d) => d.slice(0, -1));
       } else if (e.key === "Delete" && selected != null) {
+        history.push();
         setSlots((s) => s.filter((x) => x.id !== selected));
         setSelected(null);
       }
@@ -282,6 +287,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
     if (locked) return;
     try {
       const got = fromJson(text, size);
+      history.push();
       setSlots(got);
       setImportText(null);
       setMessage({ tone: "ok", text: `Imported ${got.length} slot(s): check them on the image, then Save.` });
@@ -393,6 +399,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
                              if (mode !== "edit") return;
                              e.stopPropagation();
                              setSelected(s.id);
+                             history.push();
                              setDrag({ kind: "slot", id: s.id, last: at(e) });
                            }} />
                   <text x={lx * w + w / 250} y={ly * h + w / 70} fontSize={w / 70} fontWeight={700} fill="white"
@@ -403,6 +410,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
                             onMouseDown={(e) => {
                               e.stopPropagation();
                               setSelected(s.id);
+                              history.push();
                               setDrag({ kind: "vertex", id: s.id, index: i });
                             }} />
                   ))}
@@ -529,7 +537,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
                 <CapacityField value={s.capacity} onChange={(t) => setSlots((all) => setCapacity(all, s.id, t))} />
                 <span className="text-xs text-muted">{s.poly.length} pts</span>
                 <button type="button" title="Delete" className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
-                        onClick={(e) => (e.stopPropagation(), setSlots((all) => all.filter((x) => x.id !== s.id)))}>
+                        onClick={(e) => (e.stopPropagation(), history.push(), setSlots((all) => all.filter((x) => x.id !== s.id)))}>
                   <Trash2 size={14} />
                 </button>
               </li>
@@ -537,6 +545,10 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
             {!slots.length && <li className="px-3 py-4 text-center text-sm text-muted">No slots: draw one on the image.</li>}
           </ul>
           {problems.length > 0 && <p className="mt-2 text-xs text-danger">{problems[0]}</p>}
+          {!locked && (slots.length > 0 || history.undoN > 0) && (
+            <div className="mt-3"><BayAdjust slots={slots} selected={selected} group={{ ids: slots.map((s) => s.id), label: "Whole map" }} w={w} h={h} onChange={setSlots} history={history} ns="slot"
+                                  active={!preview && draft.length === 0} title="Edit slots: adjustment" /></div>
+          )}
           </>)}
           {message && (
             <p className={`mt-3 rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`}>{message.text}</p>
@@ -566,7 +578,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
           {!locked && <div className="mt-3 flex flex-wrap gap-2">
             <Button onClick={save} disabled={!dirty || problems.length > 0 || !camera.trim()}><Save size={14} /> Save to server</Button>
             <Button variant="ghost" disabled={!dirty} onClick={() => load()}>Revert</Button>
-            <Button variant="ghost" disabled={!slots.length} onClick={() => (setSlots([]), setSelected(null))}>Clear all</Button>
+            <Button variant="ghost" disabled={!slots.length} onClick={() => (history.push(), setSlots([]), setSelected(null))}>Clear all</Button>
           </div>}
         </Card>
 

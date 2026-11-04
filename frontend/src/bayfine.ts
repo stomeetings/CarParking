@@ -97,3 +97,75 @@ export function splitBay(poly: Pt[], axis: "width" | "length", parts = 2): Pt[][
     return axis === "width" ? [at(lo, 0), at(hi, 0), at(hi, 1), at(lo, 1)] : [at(0, lo), at(1, lo), at(1, hi), at(0, hi)];
   });
 }
+
+/** The middle of a set of polygons (the mean of all their corners), as fractions: what a whole group turns about. */
+export function groupCentre(polys: Pt[][]): Pt {
+  const all = polys.flat();
+  if (!all.length) return [0.5, 0.5];
+  return [all.reduce((m, p) => m + p[0], 0) / all.length, all.reduce((m, p) => m + p[1], 0) / all.length];
+}
+
+/** Corners turned `deg` degrees clockwise on the screen about the point `c` (fractions), worked out in pixels. Not clamped: a corner may land outside
+ * the picture (see inFrame); the result is rounded to 4 decimals like every drawn point. */
+export function turnPoints(poly: Pt[], c: Pt, w: number, h: number, deg: number): Pt[] {
+  const r = (deg * Math.PI) / 180;
+  const cos = Math.cos(r);
+  const sin = Math.sin(r);
+  return poly.map(([x, y]): Pt => {
+    const dx = (x - c[0]) * w;
+    const dy = (y - c[1]) * h;
+    return [Math.round(((c[0] * w + dx * cos - dy * sin) / w) * 1e4) / 1e4, Math.round(((c[1] * h + dx * sin + dy * cos) / h) * 1e4) / 1e4];
+  });
+}
+
+/** Every corner lies on the picture (0..1, a hair of rounding allowed). */
+export const inFrame = (poly: Pt[]): boolean => poly.every(([x, y]) => x >= -1e-4 && x <= 1.0001 && y >= -1e-4 && y <= 1.0001);
+
+const onFrame = (poly: Pt[]): Pt[] => poly.map(([x, y]): Pt => [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))]);
+
+/** The bays `ids` turned together as one rigid block about `centre` (default: the middle of those bays): their spacing and angles to each other are kept, the
+ * whole grid swings. null when a corner would leave the picture (nothing is changed then). */
+export function rotateGroup(all: DrawnSlot[], ids: number[], w: number, h: number, deg: number, centre?: Pt): DrawnSlot[] | null {
+  const own = all.filter((s) => ids.includes(s.id));
+  if (!own.length || !deg) return all;
+  const c = centre ?? groupCentre(own.map((s) => s.poly));
+  const turned = own.map((s) => turnPoints(s.poly, c, w, h, deg));
+  if (!turned.every(inFrame)) return null;
+  const by = new Map(own.map((s, i) => [s.id, onFrame(turned[i])]));
+  return all.map((s) => (by.has(s.id) ? { ...s, poly: by.get(s.id)! } : s));
+}
+
+/** How the depth of a group is changed: `k` times as deep, or the back edge `px` pixels up the picture (negative: down). The front line stays where it is. */
+export type DepthSpec = { k: number } | { px: number };
+
+/** The back / top edge of a whole group of bays moved on its own (perspective depth): every point of the bays (and of `extra` polygons such as a zone's
+ * outline) is moved along the group's depth direction `v`, in proportion to its distance from the group's FRONT line, so the front baseline does not move
+ * and the side edges stay straight lines (the rows' perspective lines are kept, only the depth changes). `v` is the bays' mean back direction, the front
+ * line runs through every bay's front corners. null when there is no depth direction, or a corner would leave the picture (nothing is changed then). */
+export function depthGroup(all: DrawnSlot[], ids: number[], w: number, h: number, spec: DepthSpec, extra: Pt[][] = []): { slots: DrawnSlot[]; extra: Pt[][] } | null {
+  const own = all.filter((s) => ids.includes(s.id) && s.poly.length === 4);
+  if (!own.length) return null;
+  const px = own.map((s) => s.poly.map(([x, y]): V => [x * w, y * h]));
+  const sum = (f: (p: V[]) => V): V => px.reduce((m, p) => ((a) => [m[0] + a[0], m[1] + a[1]] as V)(f(p)), [0, 0] as V);
+  const v = unit(sum((p) => [p[3][0] - p[0][0] + p[2][0] - p[1][0], p[3][1] - p[0][1] + p[2][1] - p[1][1]]));
+  const u = unit(sum((p) => [p[1][0] - p[0][0], p[1][1] - p[0][1]]));
+  if (!v || !u) return null;
+  const fronts = px.flatMap((p) => [p[0], p[1]]);
+  const c: V = [fronts.reduce((m, q) => m + q[0], 0) / fronts.length, fronts.reduce((m, q) => m + q[1], 0) / fronts.length];
+  const vu = v[0] * u[1] - v[1] * u[0]; // v x u
+  if (Math.abs(vu) < 1e-3) return null; // the depth runs along the front line: no depth to change
+  const t = (q: V) => ((q[0] - c[0]) * u[1] - (q[1] - c[1]) * u[0]) / vu; // how far along v q lies from the front line
+  const depth = Math.max(...px.flat().map(t));
+  if (!(depth > 1e-6)) return null;
+  const k = "k" in spec ? spec.k : 1 + ((v[1] < 0 ? 1 : -1) * spec.px) / depth;
+  if (!(k > 0.05)) return null;
+  const move = (poly: Pt[]): Pt[] => poly.map(([x, y]): Pt => {
+    const q: V = [x * w, y * h];
+    const d = (k - 1) * t(q);
+    return [Math.round(((q[0] + d * v[0]) / w) * 1e4) / 1e4, Math.round(((q[1] + d * v[1]) / h) * 1e4) / 1e4];
+  });
+  const slots = all.map((s) => (ids.includes(s.id) && s.poly.length === 4 ? { ...s, poly: move(s.poly) } : s));
+  const more = extra.map((p) => (p.length ? move(p) : p));
+  if (![...slots.filter((s) => ids.includes(s.id)).map((s) => s.poly), ...more].every(inFrame)) return null;
+  return { slots, extra: more };
+}

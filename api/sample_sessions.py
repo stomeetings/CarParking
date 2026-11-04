@@ -112,6 +112,8 @@ class CalibrateIn(BaseModel):
 
 class SlotsIn(BaseModel):
     slots: list[dict] = Field(min_length=1, max_length=200)
+    outline: list[list[float]] | None = Field(None, min_length=3, max_length=200)  # the zone's outline / ground, when the page turned it with its bays
+    polygon: list[list[float]] | None = Field(None, min_length=3, max_length=200)
 
 
 class Layers(BaseModel):
@@ -494,6 +496,14 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
             raise HTTPException(422, str(e)) from None
         if any(x["id"] // 100 != zone for x in bays):
             raise HTTPException(422, f"a bay of zone {zone} has an id {zone}01..{zone}99")
+        for key in ("outline", "polygon"):
+            pts = getattr(body, key)
+            if pts is not None and any(len(q) != 2 or not all(-1e-3 <= v <= 1.001 for v in q) for q in pts):
+                raise HTTPException(422, f"the zone's {key}: corners are [x, y] shares of the picture")
+        if body.outline is not None:
+            z["outline"] = body.outline
+        if body.polygon is not None:
+            z["polygon"] = body.polygon
         z["slots"] = bays
         z["calibration"] = {**z["calibration"], "bays": len(bays)}
         return zone_view(s)

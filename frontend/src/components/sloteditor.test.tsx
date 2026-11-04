@@ -100,6 +100,44 @@ describe("slot editor: Fixed mode draws, Dynamic mode is read-only", () => {
   });
 });
 
+describe("Edit slots panel (Fixed mode)", () => {
+  it("moves, turns, splits and undoes on the drawn slots; the edited map is what Save sends and what Test slots checks; Dynamic has no panel", async () => {
+    const puts: string[] = [];
+    serve("fixed", puts);
+    editor();
+    await waitFor(() => expect(screen.getByTestId("slot-fine")).toBeTruthy());
+    await waitFor(() => expect(screen.getByTestId("mode-fixed")).toBeTruthy()); // (the mode card's answer resets the selection once)
+    const save = () => screen.getByText("Save to server").closest("button") as HTMLButtonElement;
+    expect(save().disabled).toBe(true); // nothing edited
+    fireEvent.click(screen.getByTestId("slot-list").querySelector("li")!); // select A1
+    fireEvent.change(screen.getByTestId("slot-fine-step"), { target: { value: "10" } });
+    fireEvent.click(screen.getByTestId("slot-fine-down"));
+    expect(save().disabled).toBe(false); // an edit
+    fireEvent.click(screen.getByTestId("slot-undo-edit"));
+    expect(save().disabled).toBe(true); // undone: the saved map again
+    fireEvent.click(screen.getByTestId("slot-redo-edit"));
+    fireEvent.click(screen.getByTestId("slot-turn-cw")); // the whole map as one block
+    fireEvent.click(screen.getByTestId("slot-split-width"));
+    expect(screen.getByTestId("slot-list").querySelectorAll("li")).toHaveLength(2);
+    // the edited, unsaved slots are what the real-time test is asked about
+    fireEvent.click(screen.getByText("Test all slots"));
+    await waitFor(() => expect(puts.some((u) => u.startsWith("preview "))).toBe(true));
+    const sent = JSON.parse(puts.find((u) => u.startsWith("preview "))!.slice(8));
+    expect(sent.slots).toHaveLength(2);
+    expect(sent.slots[0].poly).not.toEqual(BAY.poly);
+    fireEvent.click(screen.getAllByText("Back to edit")[0]); // and Save sends them to the server
+    fireEvent.click(save());
+    await waitFor(() => expect(puts.some((u) => u.startsWith("/api/fixed-slots"))).toBe(true));
+  });
+
+  it("Dynamic mode: no adjustment panel", async () => {
+    serve("dynamic", []);
+    editor();
+    await waitFor(() => expect(screen.getByTestId("dynamic-lock")).toBeTruthy());
+    expect(screen.queryByTestId("slot-fine")).toBeNull();
+  });
+});
+
 describe("Test slots preview (Fixed mode, read-only)", () => {
   it("previews FREE / BUSY, pauses editing, and Back to edit returns with nothing lost", async () => {
     const puts: string[] = [];

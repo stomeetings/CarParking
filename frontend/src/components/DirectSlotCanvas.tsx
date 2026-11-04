@@ -2,6 +2,7 @@ import { Check, Hand, Hexagon, MousePointer2, RectangleHorizontal, Save, Trash2,
 import { useMemo, useRef, useState } from "react";
 import { points } from "../lib";
 import { type DrawnSlot, type Pt, addSlot, mapProblems, moveSlot, moveVertex, nearFirst, nextId, pt, rectPoly } from "../slotdraw";
+import { BayAdjust, useBayHistory } from "./BayAdjust";
 import { Button, Pill } from "./ui";
 import { MAX_ZOOM, MIN_ZOOM, useZoomPan } from "./useZoomPan";
 
@@ -50,6 +51,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
   const outer = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const { view, zoomCentre, panBy, fit, transform } = useZoomPan(outer);
+  const history = useBayHistory(slots, onChange); // Undo / Redo of every edit made here, the panel's included (50 deep)
   const problems = useMemo(() => mapProblems(slots), [slots]);
 
   const at = (e: { clientX: number; clientY: number }): Pt => {
@@ -65,6 +67,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
     const r = addSlot(slots, poly, `Slot ${nextId(slots)}`);
     if (r.error) setNote({ tone: "error", text: `Not added: ${r.error}.` });
     else {
+      history.push();
       onChange(r.slots);
       setSel(r.slots[r.slots.length - 1].id);
       setNote(null);
@@ -122,7 +125,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
       remove(sel);
     }
   };
-  const remove = (id: number) => { onChange(slots.filter((s) => s.id !== id)); setSel(null); };
+  const remove = (id: number) => { history.push(); onChange(slots.filter((s) => s.id !== id)); setSel(null); };
 
   const save = () => {
     if (problems.length) return setNote({ tone: "error", text: `Not saved: ${problems[0]}` });
@@ -140,6 +143,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
       if (raw) got = JSON.parse(raw) as DrawnSlot[];
     } catch { /* a damaged entry: fall back to the starter layout */ }
     const used = got && got.length > 0 && !mapProblems(got).length ? got : null;
+    history.push();
     onChange(used ?? starterSlots());
     setSel(null);
     setDraft([]);
@@ -183,12 +187,12 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
                 <g key={s.id} data-testid="draw-slot" data-id={s.id}>
                   <polygon points={points(s.poly, w, h)} fill={on ? "rgba(249,177,21,0.28)" : "rgba(79,70,229,0.18)"} stroke={on ? "#f9b115" : "#4f46e5"} strokeWidth={2}
                            vectorEffect="non-scaling-stroke" style={{ cursor: tool === "edit" ? "move" : undefined }}
-                           onMouseDown={(e) => { if (tool === "edit" && e.button === 0) (e.stopPropagation(), outer.current?.focus(), setSel(s.id), setDrag({ kind: "slot", id: s.id, last: at(e) })); }} />
+                           onMouseDown={(e) => { if (tool === "edit" && e.button === 0) (e.stopPropagation(), outer.current?.focus(), setSel(s.id), history.push(), setDrag({ kind: "slot", id: s.id, last: at(e) })); }} />
                   <text x={lx + font * 0.3} y={ly + font * 1.1} fontSize={font} fontWeight={700} fill="white" stroke="black" strokeWidth={font / 12} paintOrder="stroke"
                         pointerEvents="none">{s.name}</text>
                   {tool !== "pan" && on && s.poly.map(([x, y], i) => (
                     <circle key={i} cx={x * w} cy={y * h} r={dot} fill="white" stroke="#f9b115" strokeWidth={2} vectorEffect="non-scaling-stroke" style={{ cursor: "grab" }}
-                            data-testid="draw-vertex" onMouseDown={(e) => { if (e.button === 0) (e.stopPropagation(), setDrag({ kind: "vertex", id: s.id, index: i, ...(isRect(s.poly) ? { anchor: s.poly[(i + 2) % 4] } : {}) })); }} />
+                            data-testid="draw-vertex" onMouseDown={(e) => { if (e.button === 0) (e.stopPropagation(), history.push(), setDrag({ kind: "vertex", id: s.id, index: i, ...(isRect(s.poly) ? { anchor: s.poly[(i + 2) % 4] } : {}) })); }} />
                   ))}
                 </g>
               );
@@ -228,7 +232,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
         <Button variant="outline" onClick={save} disabled={!slots.length} data-testid="draw-save" title="Remember these slots in this browser for pictures of the same size"><Save size={13} /> Save slots</Button>
         <Button variant="outline" onClick={loadPreset} data-testid="draw-preset" title="Your saved slots for this picture size, or a starter layout to move onto the bays">Load default slot preset</Button>
         <Button variant="ghost" onClick={() => remove(sel!)} disabled={sel == null} data-testid="draw-delete"><Trash2 size={13} /> Delete selected</Button>
-        <Button variant="ghost" onClick={() => (onChange([]), setSel(null), setDraft([]), setNote(null))} disabled={!slots.length} data-testid="draw-clear">Clear all</Button>
+        <Button variant="ghost" onClick={() => (history.push(), onChange([]), setSel(null), setDraft([]), setNote(null))} disabled={!slots.length} data-testid="draw-clear">Clear all</Button>
       </div>
       {slots.length > 0 && (
         <ul className="max-h-40 divide-y divide-line overflow-y-auto rounded-md border border-line" data-testid="draw-list">
@@ -243,6 +247,10 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
             </li>
           ))}
         </ul>
+      )}
+      {(slots.length > 0 || history.undoN > 0) && (
+        <BayAdjust slots={slots} selected={sel} group={{ ids: slots.map((s) => s.id), label: "Whole map" }} w={w} h={h} onChange={onChange} history={history} ns="draw"
+                   active={draft.length === 0} title="Edit bays: slot adjustment" />
       )}
       {problems.length > 0 && <p className="text-xs text-danger" data-testid="draw-problem">{problems[0]}</p>}
       {note && <p className={`rounded-md px-3 py-1.5 text-xs ${note.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`} data-testid="draw-note">{note.text}</p>}
