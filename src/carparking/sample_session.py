@@ -402,12 +402,14 @@ def _perspective_edges(edges: list[float], f0, f1, b0, b1) -> list[float]:
     return fit if np.isfinite(fit).all() and all(b > a for a, b in zip(fit, fit[1:])) else edges
 
 
-def car_row_grid(outline, w: int, h: int, cars, rows: int = 1, cam=None, frame: ZoneFrame | None = None, width_m: float = BAY[0]) -> tuple[list[dict], dict] | None:
+def car_row_grid(outline, w: int, h: int, cars, rows: int = 1, cam=None, frame: ZoneFrame | None = None, width_m: float = BAY[0],
+                 edges: list[float] | None = None) -> tuple[list[dict], dict] | None:
     """A zone's bays from its own parked cars, in the picture itself: no metres, so neither the typed scale nor GeoCalib's tilt and roll (nor a
     picture resized out of its aspect) can make them too narrow or too wide. The outline's front and back edges are the row's front and back;
     its two short sides meet at the vanishing point of the bays' separating lines. Every car (car_position) is carried along those lines onto
     the front edge; the bays start at the outline's first corner and are as wide as the cars there are apart (anchored_edges): one car, one
-    bay. None with fewer than MIN_ROW_CARS cars in the zone (the caller lays the metric grid then)."""
+    bay. None with fewer than MIN_ROW_CARS cars in the zone (the caller lays the metric grid then).
+    edges: the bays' edges given (t along the front edge, 0..1): no car decides anything, the same lattice is cut with these (a fixed bay count)."""
     from carparking.geometry.camera import to_ground
     from carparking.geometry_live import VEHICLE_HALF
     out_px = np.asarray(outline, float) * (w, h)
@@ -424,10 +426,12 @@ def car_row_grid(outline, w: int, h: int, cars, rows: int = 1, cam=None, frame: 
         m = _meet(c, (vp - c) if vp is not None else side, f0, fd)
         if m is not None:
             ts.append(float(np.dot(m - f0, fd) / flen ** 2))  # 0 at F0, 1 at F1
-    edges = anchored_edges(ts, (lambda x: frame.bay_t(x, width_m)) if frame is not None else None)
-    if len(edges) < 2:
-        return None
-    edges = _perspective_edges(edges, f0, f1, b0, b1)
+    given = edges is not None
+    if not given:
+        edges = anchored_edges(ts, (lambda x: frame.bay_t(x, width_m)) if frame is not None else None)
+        if len(edges) < 2:
+            return None
+        edges = _perspective_edges(edges, f0, f1, b0, b1)
 
     def back_of(pf):
         q = _meet(pf, (vp - pf) if vp is not None else side, b0, b1 - b0)
@@ -458,7 +462,7 @@ def car_row_grid(outline, w: int, h: int, cars, rows: int = 1, cam=None, frame: 
     elif cam is not None and slots:
         g = to_ground(cam, np.array([f0 + edges[0] * fd, f0 + edges[1] * fd]))
         width = round(float(np.linalg.norm(g[1] - g[0])), 2) if np.isfinite(g).all() else None
-    return slots, {"width_m": width, "length_m": None, "source": f"fitted to the zone's {len(ts)} cars in the picture",
+    return slots, {"width_m": width, "length_m": None, "source": ("the expected bay count" if given else f"fitted to the zone's {len(ts)} cars in the picture"),
                    "bays_along": len(edges) - 1, "rows": rows}
 
 
@@ -490,6 +494,50 @@ def frame_grid(frame: ZoneFrame, w: int, h: int, bay=BAY, rows: int = 1) -> tupl
 
 
 MAX_ROWS = 6  # rows of bays in one zone
+SLOPE_MAX_SHIFT = 0.25  # the slope-corrected outline may move a corner at most this share of the picture's diagonal, else the drawn one is kept
+
+
+def ground_outline(cam, outline, w: int, h: int, depth_m: float | None = None) -> list[list[float]] | None:
+    """The zone's outline as the camera sees a true ground rectangle: the drawn front edge is kept (it is on the ground, where the row stands), the
+    sides are the ground perpendicular to it carried through the camera (GeoCalib's tilt, roll and lens), not the drawn sides, which a hand-drawn
+    rectangle leaves at any angle. Its depth is `depth_m` (the zone frame's), else the drawn back edge's distance on the ground. The sides then
+    converge on the vanishing point the camera really has, so the bays' separators follow the perspective slope. None when it cannot be built (a corner
+    above the horizon, a degenerate edge, a corner moved too far): the caller keeps the drawn outline."""
+    from carparking.geometry.camera import to_ground
+    out_px = np.asarray(outline, float) * (w, h)
+    (f0, f1), (b0, b1) = _outline_sides(out_px)
+    g = to_ground(cam, np.array([f0, f1, b0, b1]))
+    if not np.isfinite(g).all():
+        return None
+    d = g[1] - g[0]
+    length = float(np.linalg.norm(d))
+    if length < 0.5:
+        return None
+    d = d / length
+    n = np.array([-d[1], d[0]])
+    off = float(((g[2] + g[3]) / 2 - g[0]) @ n)
+    if abs(off) < 0.1:
+        return None
+    depth = float(depth_m) if depth_m and np.isfinite(depth_m) and depth_m > 0.5 else abs(off)
+    n = n * (1.0 if off > 0 else -1.0)
+    ground = np.array([g[0], g[1], g[1] + n * depth, g[0] + n * depth])
+    px = to_image(cam, ground)
+    if not np.isfinite(px).all():
+        return None
+    old = np.array([f0, f1, b1, b0])
+    if float(np.linalg.norm(px - old, axis=1).max()) > SLOPE_MAX_SHIFT * float(np.hypot(w, h)):
+        return None
+    if px[:, 0].min() < -0.05 * w or px[:, 0].max() > 1.05 * w or px[:, 1].min() < -0.05 * h or px[:, 1].max() > 1.05 * h:
+        return None
+    keep = np.array([f0, f1, px[2], px[3]]) / (w, h)  # (the drawn front edge exactly as it was; only the back corners are the camera's)
+    return np.clip(keep, 0.0, 1.0).round(4).tolist()
+
+
+def count_edges(frame: "ZoneFrame | None", f0, f1, b0, b1, n: int) -> list[float]:
+    """n equal bays along a zone's front edge as edges t in 0..1: equal on the ground in the zone's frame, else in the outline's own perspective."""
+    if frame is not None:
+        return [0.0, *(frame.t_of_u(i / n) for i in range(1, n)), 1.0] if n > 1 else [0.0, 1.0]
+    return _perspective_edges([i / n for i in range(n + 1)], f0, f1, b0, b1) if n > 2 else [i / n for i in range(n + 1)]
 
 
 def auto_rows(frame: "ZoneFrame | None", length_m: float) -> int:
@@ -500,7 +548,8 @@ def auto_rows(frame: "ZoneFrame | None", length_m: float) -> int:
     return int(min(MAX_ROWS, max(1, round(frame.depth_m / length_m))))
 
 
-def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars=(), reference: dict | None = None) -> tuple[list[dict], dict]:
+def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars=(), reference: dict | None = None, count: int | None = None,
+             slope: bool = False) -> tuple[list[dict], dict]:
     """A zone's bays laid straight along its row, on the ground, by the zone's own calibration. No car-anchored lattice: the bays follow the zone.
       * the row's direction is the outline's longer side IN THE PICTURE (a zone is drawn along its row), measured on the ground where the outline
         stands. (Its longer side on the ground is not used: on an oblique view the outline's top, drawn over the cars' bodies, lands metres behind
@@ -513,6 +562,10 @@ def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars
     (frame_grid). The camera grid below is the last resort: it is right only as far as GeoCalib's tilt, roll and height are, and on the sample
     pictures they were wrong enough to put two bays on one car at the row's far end (image2.png: 16 bays for 7 cars).
     rows: how many rows of bays from the front edge; 0 = automatic (auto_rows: the zone's depth over the bay length, with a reference).
+    count: the expected number of bays in the zone (the real lot's): fixed, whatever the cars or the zone's length say. The row is cut into
+      ceil(count / rows) equal bays on the ground and the last cells are dropped to make exactly `count`.
+    slope: re-draw the outline's sides along the camera's ground perpendicular (ground_outline) before laying anything: the bays then follow the
+      true perspective slope, not the drawn rectangle's. The outline used is returned in the sizing as "outline" (fractions) so the page can show it.
     -> (fixed-slot dicts: fractions, ids 1..n, front row first; {"width_m", "length_m", "source", "bays_along", "rows"})."""
     from carparking.geometry.bev import densify
     from carparking.geometry.camera import to_ground
@@ -521,13 +574,31 @@ def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars
     if cam is None:
         raise SessionError("the calibration does not fit the picture's shape")
     frame = zone_frame(outline, w, h, cam, reference)
+    shown = None
+    if slope:
+        shown = ground_outline(cam, outline, w, h, frame.depth_m if frame is not None else None)
+        if shown is not None:
+            outline = shown
+            frame = zone_frame(outline, w, h, cam, reference)
     if not rows:
         rows = auto_rows(frame, float(bay[1]))
+    if count:
+        along = -(-int(count) // max(1, int(rows)))
+        (f0, f1), (b0, b1) = _outline_sides(np.asarray(outline, float) * (w, h))
+        made = car_row_grid(outline, w, h, [], rows, cam, frame, float(bay[0]), edges=count_edges(frame, f0, f1, b0, b1, along))
+        if made is not None:
+            made[0][:] = made[0][:int(count)]
+            made[1]["bays_along"] = along
+            made[1]["outline"] = shown
+            return made
     by_cars = car_row_grid(outline, w, h, list(cars), rows, cam, frame, float(bay[0]))
     if by_cars is not None:
+        by_cars[1]["outline"] = shown
         return by_cars
     if frame is not None:
-        return frame_grid(frame, w, h, bay, rows)
+        made = frame_grid(frame, w, h, bay, rows)
+        made[1]["outline"] = shown
+        return made
     out_px = np.asarray(outline, float) * (w, h)
     g = to_ground(cam, densify(out_px))
     g = g[np.isfinite(g).all(axis=1)]
@@ -566,7 +637,7 @@ def row_grid(record: dict, outline, w: int, h: int, bay=BAY, rows: int = 1, cars
             far = to_image(cam, np.array([mid, mid + (0.0, VEHICLE_HALF)])) / (w, h)
             lift = float(far[0][1] - far[1][1]) if np.isfinite(far).all() else 0.0
             slots.append({"id": len(slots) + 1, "name": f"B{len(slots) + 1}", "poly": poly.round(4).tolist(), "lift": round(max(lift, 0.0), 5)})
-    return slots, {"width_m": round(float(step), 2), "length_m": length, "source": source, "bays_along": n, "rows": max(1, int(rows))}
+    return slots, {"width_m": round(float(step), 2), "length_m": length, "source": source, "bays_along": n, "rows": max(1, int(rows)), "outline": shown}
 
 
 def in_zone(raw: list[dict], outline, w: int, h: int, margin: float = 0.02) -> list[dict]:

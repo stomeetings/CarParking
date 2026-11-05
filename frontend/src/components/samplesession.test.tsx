@@ -895,6 +895,23 @@ describe("the Top-down (aerial) scale method", () => {
   });
 });
 
+describe("expected bays", () => {
+  it("sends nothing extra by default; the typed bay count goes with the calibration", async () => {
+    const net = serve();
+    show();
+    await upload();
+    zoneReady();
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay")).toHaveLength(2), { timeout: 4000 });
+    const first = posts(net, "/calibrate").body!;
+    expect("expected_bays" in first).toBe(false); // automatic unless asked
+    fireEvent.change(screen.getByTestId("zone-expected"), { target: { value: "8x" } });
+    expect((screen.getByTestId("zone-expected") as HTMLInputElement).value).toBe("8"); // digits only
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(net.calls.filter((c) => c.method === "POST" && c.url.endsWith("/calibrate")).at(-1)!.body).toMatchObject({ expected_bays: 8 }), { timeout: 4000 });
+  });
+});
+
 describe("dynamic slots and zone rows", () => {
   it("dynamic slots are off by default and sent only when switched on; a zone's rows and bay size are shown", async () => {
     const net = serve();

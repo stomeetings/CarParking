@@ -107,6 +107,7 @@ class CalibrateIn(BaseModel):
     zone: int | None = Field(None, ge=1, le=MAX_ZONES)  # calibrate one zone: GeoCalib on its surface alone, its own grid; the auto grid is left as it is
     zone_name: str = Field("", max_length=40)
     bound: list[list[float]] | None = Field(None, min_length=3, max_length=200)  # the zone's drawn outline: its cars and its row direction (default: polygon)
+    expected_bays: int | None = Field(None, ge=1, le=ss.MAX_ZONE_BAYS)  # the real lot's number of bays in this zone: fixed, the layout never settles on its own count
     rows: int = Field(1, ge=0, le=6)  # rows of bays in a zone, from its front edge (1 by default; 0 = automatic: the zone's depth over a bay's length)
 
 
@@ -228,7 +229,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
     def zone_view(s: dict) -> dict:
         """The zones (calibration summary, own bays) and the merged list the run will use."""
         merged, dropped = ss.merge_zones(s["zones"], s["w"], s["h"])
-        return {"zones": [{"zone": z, "name": v["name"], "polygon": v["polygon"], "calibration": v["calibration"], "slots": v["slots"]} for z, v in sorted(s["zones"].items())],
+        return {"zones": [{"zone": z, "name": v["name"], "polygon": v["polygon"], "outline": v.get("outline"), "calibration": v["calibration"], "slots": v["slots"]} for z, v in sorted(s["zones"].items())],
                 "zone_slots": merged, "zone_dropped": dropped}
 
     def view(s: dict) -> dict:
@@ -422,7 +423,8 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                 if body.zone is not None:  # a zone's bays follow its outline (direction, length, rows), not the car-anchored lattice of the whole picture
                     ref = body.reference.model_dump() if body.method in ("geocalib", "topdown") else {"a": body.pins[0], "b": body.pins[1], "metres": body.sides[0]}
                     slots, sizing = await asyncio.to_thread(ss.row_grid, rec, outline, s["w"], s["h"], bay, body.rows,
-                                                            [tuple(d["box"]) for d in raw if d.get("state") is not None], ref)
+                                                            [tuple(d["box"]) for d in raw if d.get("state") is not None], ref, body.expected_bays,
+                                                            body.method != "topdown")  # (a top-down picture keeps the drawn rectangle: GeoCalib does not apply)
                 else:
                     slots = await asyncio.to_thread(ss.grid_slots, rec, s["w"], s["h"])
                 if not slots:
@@ -435,6 +437,9 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                     if over:
                         note["warnings"] = [*note["warnings"], f"{over} bay(s) over the {ss.MAX_ZONE_BAYS} of one zone were left out: split the zone in two"]
                     note["bays"] = len(bays)
+                    shown = sizing.pop("outline", None)
+                    if shown is not None:  # the outline follows the camera's slope: the page shows the rectangle the bays were cut from
+                        outline = shown
                     note["sizing"] = sizing
                     s["zones"][body.zone] = {"name": body.zone_name or f"Zone {ss.zone_letter(body.zone)}", "polygon": body.polygon, "outline": outline, "record": rec,
                                              "slots": bays, "calibration": note}

@@ -402,3 +402,47 @@ def test_a_zone_two_cars_deep_gets_two_rows_automatically_one_bay_per_car():
     narrow = [(690 / w, 790 / h), (690 / w, 20 / h), (780 / w, 20 / h), (780 / w, 790 / h)]  # one car deep (5 m): still one row
     assert ss.row_grid(ss.topdown_record(frame, [], reference=ref, polygon=narrow, row_outline=narrow), narrow, w, h, rows=0, reference=ref)[1]["rows"] == 1
     assert ss.auto_rows(None, 5.0) == 1  # without a reference there is no depth to go by
+
+
+def _synthetic_row(pitch_deg=35, width=1920, shear=0.0):
+    """A 15 x 5 m row seen by a known camera; the outline as DRAWN may be sheared (its back edge shifted sideways by `shear` metres), as a hand-drawn rectangle is."""
+    w, h = width, round(width * 9 / 16)
+    cam = CameraModel(f=0.8 * w, cx=w / 2, cy=h / 2, pitch=np.radians(pitch_deg), roll=np.radians(1.0), h=8.0)
+    y0 = 8.0 / np.tan(np.radians(pitch_deg)) - 2.5
+    drawn = (to_image(cam, [(-7.5, y0), (7.5, y0), (7.5 + shear, y0 + 5), (-7.5 + shear, y0 + 5)]) / (w, h)).tolist()
+    ref = {"a": (to_image(cam, [(-7.5, y0)])[0] / (w, h)).tolist(), "b": (to_image(cam, [(-5.0, y0)])[0] / (w, h)).tolist(), "metres": 2.5}
+    return cam, drawn, ref, w, h
+
+
+def test_the_outline_follows_the_camera_slope_not_the_drawn_rectangles():
+    from carparking.geometry.camera import to_ground
+    cam, drawn, ref, w, h = _synthetic_row(shear=2.0)  # the drawn back edge leans 2 m: the bays' sides would lean with it
+    fixed = ss.ground_outline(cam, drawn, w, h)
+    assert fixed is not None
+    g = to_ground(cam, np.asarray(fixed) * (w, h))
+    for a, b in ((0, 3), (1, 2)):  # the sides are square to the front edge on the ground
+        side = g[b] - g[a]
+        assert abs(side[0]) < 0.15 and side[1] == pytest.approx(5.0, abs=0.15), (a, b, side)
+    assert np.allclose(np.asarray(fixed)[:2], np.clip(np.asarray(drawn)[:2], 0, 1), atol=1e-3)  # the front edge (on the ground, where the row stands) is kept
+    fr = ss.zone_frame(fixed, w, h, cam, ref)
+    slots, _ = ss.frame_grid(fr, w, h)
+    for s in slots:
+        gs = to_ground(cam, np.asarray(s["poly"]) * (w, h))
+        assert np.ptp(gs[:, 0]) == pytest.approx(2.5, abs=0.3) and np.ptp(gs[:, 1]) == pytest.approx(5.0, abs=0.3)
+    level = CameraModel(f=0.8 * w, cx=w / 2, cy=h / 2, pitch=np.radians(5.0), roll=0.0, h=8.0)  # (its horizon is at 38 % of the picture's height)
+    assert ss.ground_outline(level, [[0.1, 0.1], [0.9, 0.1], [0.9, 0.2], [0.1, 0.2]], w, h) is None  # above the horizon: the drawn one is kept
+
+
+@pytest.mark.parametrize("n", [4, 6, 9, 13])
+def test_an_expected_bay_count_is_exact_whatever_the_cars_or_the_zone_length(n):
+    cam, outline, ref, w, h = _synthetic_row()
+    fr = ss.zone_frame(outline, w, h, cam, ref)
+    (f0, f1), (b0, b1) = ss._outline_sides(np.asarray(outline) * (w, h))
+    for frame in (fr, None):  # (without a reference: the outline's own perspective)
+        edges = ss.count_edges(frame, f0, f1, b0, b1, n)
+        slots, info = ss.car_row_grid(outline, w, h, [], 1, cam, frame, edges=edges)
+        assert len(slots) == n and info["bays_along"] == n and info["source"] == "the expected bay count"
+        widths = [float(np.linalg.norm((np.asarray(s["poly"])[1] - np.asarray(s["poly"])[0]) * (w, h))) for s in slots]
+        widths = widths[1:-1]  # (the end bays are cut by the picture's edge)
+        steps = np.diff(widths)
+        assert (steps <= 0.005 * max(widths)).all() or (steps >= -0.005 * max(widths)).all()  # steadily changing with the perspective, no jumps

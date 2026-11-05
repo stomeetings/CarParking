@@ -489,6 +489,23 @@ def test_each_zone_gets_its_own_geocalib_run_and_grid_and_the_auto_grid_is_left_
         assert c.delete(f"/api/sample-sessions/{sid}/zones/2", headers=AUTH).status_code == 404
 
 
+@pytest.mark.parametrize("n", [3, 5, 8])
+def test_an_expected_bay_count_fixes_the_zone(env, monkeypatch, scripted, n):
+    net = Net()
+    with app_client(env, monkeypatch, net) as c:
+        sid, _ = calibrated(c)
+        a, b = (to_image(test_setup_api.CAM, [(-3, 12), (2, 15)]) / (W, H)).tolist()
+        geo = {"method": "geocalib", "reference": {"a": a, "b": b, "metres": float(np.hypot(5, 3))}, "lens": "simple_radial"}
+        sizes = set()
+        for _ in range(2):  # (again and again: the count never moves by itself)
+            j = zone_cal(c, sid, 1, NEAR, expected_bays=n, **geo)
+            assert j["state"] == "done" and j["result"]["bays"] == n and len(j["result"]["slots"]) == n, j
+            sizes.add(len(j["result"]["slots"]))
+        assert sizes == {n}
+        z = c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json()["zones"][0]
+        assert len(z["outline"]) == 4  # the outline the bays were cut from (the page shows it)
+
+
 def test_sam_for_a_zone_is_cut_to_its_outline_and_does_not_replace_the_surface(env, monkeypatch, scripted):
     net = Net()
     with app_client(env, monkeypatch, net) as c:

@@ -54,9 +54,10 @@ type Mode = "pins" | "ref" | "polygon" | "sam" | "edit" | "zone-outline" | "zone
 /** A zone being set up on the page: its outline (drawn), SAM's clicks in it and SAM's surface inside it (or none: the outline is the surface). */
 /** What Undo / Redo put back: the zones' bays and which of them are unsaved, and each zone's outline and SAM ground (a whole-zone turn moves them). */
 interface EditSnap { merge: ZoneMerge; dirty: number[]; shapes: Record<number, { outline: Pt[]; surface: Pt[] | null }> }
-interface ZoneDraft { id: number; name: string; outline: Pt[]; sam: { p: Pt; keep: boolean }[]; surface: Pt[] | null; rows: number }
+interface ZoneDraft { id: number; name: string; outline: Pt[]; sam: { p: Pt; keep: boolean }[]; surface: Pt[] | null; rows: number;
+  expected: string }  // the real lot's number of bays in this zone ("" = automatic); fixed once typed
 /** A zone the server calibrated (its own GeoCalib / pins run and grid): GET session `zones`. */
-interface ZoneCal { zone: number; name: string; polygon: Pt[]; calibration: Calibration; slots: DrawnSlot[] }
+interface ZoneCal { zone: number; name: string; polygon: Pt[]; outline?: Pt[] | null; calibration: Calibration; slots: DrawnSlot[] }
 interface ZoneMerge { zones: ZoneCal[]; zone_slots: DrawnSlot[]; zone_dropped: { id: number; name: string; same_as: string }[] }
 const ZONE_COLOURS = ["#0ea5b7", "#f97316", "#8b5cf6", "#16a34a", "#e11d48", "#ca8a04"];
 const zoneColour = (id: number) => ZONE_COLOURS[(id - 1) % ZONE_COLOURS.length];
@@ -179,7 +180,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       reset();
       setSession(s);
       setLayers(s.layers);
-      setZones([{ id: 1, name: "Zone A", outline: [], sam: [], surface: null, rows: 0 }]); // the picture is laid out by zones only: the first one is ready to draw
+      setZones([{ id: 1, name: "Zone A", outline: [], sam: [], surface: null, rows: 0, expected: "" }]); // the picture is laid out by zones only: the first one is ready to draw
       setActiveZone(1);
     } catch (e) {
       fail(e, "Starting a sample session");
@@ -196,6 +197,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       if (r.zone != null && r.slots) {
         const zid = r.zone;
         setMerge({ zones: r.zones ?? [], zone_slots: r.zone_slots ?? [], zone_dropped: r.zone_dropped ?? [] });
+        const shown = (r.zones ?? []).find((z) => z.zone === zid)?.outline; // the rectangle the bays were cut from (sides along the camera's slope): the drawn one follows it
+        if (shown && shown.length >= 3) setZones((all) => all.map((z) => (z.id === zid ? { ...z, outline: shown } : z)));
         history.clear();
         setZoneDirty((d) => d.filter((x) => x !== zid)); // a new calibration replaces the zone's edited bays
         setMode("edit");
@@ -290,7 +293,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const setZone = (id: number, change: Partial<ZoneDraft>) => setZones((all) => all.map((z) => (z.id === id ? { ...z, ...change } : z)));
   const addZone = () => {
     const id = Math.max(0, ...zones.map((z) => z.id), ...merge.zones.map((z) => z.zone)) + 1;
-    setZones([...zones, { id, name: `Zone ${zoneLetter(id)}`, outline: [], sam: [], surface: null, rows: 0 }]);
+    setZones([...zones, { id, name: `Zone ${zoneLetter(id)}`, outline: [], sam: [], surface: null, rows: 0, expected: "" }]);
     setActiveZone(id);
     setMode("zone-outline");
   };
@@ -325,11 +328,12 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   };
   const outlineZone = (z: ZoneDraft) => session && sendJob("surface", {
     tune, zone: z.id, bound: z.outline, clicks: z.sam.map(({ p: [x, y], keep }) => ({ x: x * session.width, y: y * session.height, label: keep ? 1 : 0 })) }, `Outlining ${z.name} with SAM`);
+  const zoneOptions = (z: ZoneDraft) => ({ ...(Number(z.expected) >= 1 ? { expected_bays: Math.min(99, Math.floor(Number(z.expected))) } : {}) });
   const calibrateZone = (z: ZoneDraft) => {
     const polygon = z.surface ?? z.outline;
     return sendJob("calibrate", method === "rectangle"
-      ? { method, tune, polygon, pins, sides: [Number(sides.a), Number(sides.b)], zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows }
-      : { method, tune, polygon, ...(method === "geocalib" ? { lens } : {}), reference: { a: ref[0], b: ref[1], metres: Number(refMetres) }, zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows }, `Calibrating ${z.name}`);
+      ? { method, tune, polygon, pins, sides: [Number(sides.a), Number(sides.b)], zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows, ...zoneOptions(z) }
+      : { method, tune, polygon, ...(method === "geocalib" ? { lens } : {}), reference: { a: ref[0], b: ref[1], metres: Number(refMetres) }, zone: z.id, zone_name: z.name, bound: z.outline, rows: z.rows, ...zoneOptions(z) }, `Calibrating ${z.name}`);
   };
   // a zone's bays edited on the picture: kept here (in the zone and in the merged list) and saved to the server before an extension or a run
   const editZoneBays = (next: DrawnSlot[], id: number) => {
@@ -483,6 +487,10 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                 <Button variant={mode === "zone-outline" ? "primary" : "outline"} onClick={() => setMode("zone-outline")} data-testid="zone-draw"><Crosshair size={14} /> Draw outline ({az.outline.length})</Button>
                 <Button variant="ghost" onClick={() => setZone(az.id, { outline: az.outline.slice(0, -1), surface: null })} disabled={!az.outline.length} data-testid="zone-undo">Undo corner</Button>
                 <Button variant="ghost" onClick={() => setZone(az.id, { outline: [], sam: [], surface: null })} disabled={!az.outline.length && !az.sam.length} data-testid="zone-clear">Clear</Button>
+                <label className="block text-xs text-muted" title="The real number of bays in this zone. Typed, the layout always has exactly this many and never changes it by itself; empty, it is worked out from the picture">Expected bays
+                  <input className="ml-1 w-14 rounded-md border border-line px-1.5 py-1 text-sm text-ink" inputMode="numeric" placeholder="auto" value={az.expected} data-testid="zone-expected"
+                         onChange={(e) => setZone(az.id, { expected: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) })} />
+                </label>
                 <label className="block text-xs text-muted" title="Rows of bays in this zone, from its front edge (the one nearest the camera). Auto: the zone's depth over a bay's length, so a zone drawn over two cars side by side gets two rows">Rows
                   <select className="ml-1 rounded-md border border-line bg-white px-1.5 py-1 text-sm text-ink" value={az.rows} data-testid="zone-rows"
                           onChange={(e) => setZone(az.id, { rows: Number(e.target.value) })}>
