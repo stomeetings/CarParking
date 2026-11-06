@@ -35,6 +35,7 @@ export interface Detection {
   src: string; // "" | "zoom" | "cam" | "coco" | "cam+coco"
   kind: "vehicle" | "other";
   box: [number, number, number, number]; // x1, y1, x2, y2 as fractions
+  poly?: [number, number][]; // an oriented (rotated) box: its 4 corners as fractions, drawn instead of the box
   /** Non-vehicle filter on: why the tracker did not let this box count as a vehicle (too_small / aspect / pylon / shadow). */
   rejected?: string;
 }

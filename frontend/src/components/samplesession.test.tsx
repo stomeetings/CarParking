@@ -33,8 +33,8 @@ const RESULT: SampleResult = {
 
 const DEFAULTS = { model: "default", conf: 0.2, iou: 0.45, footprint: 0.5, encroach: 0.3 };
 const MODELS = [{ id: "default", label: "This camera's own detector", note: "the profile camera's weights", kind: "vehicle", ready: true },
-                { id: "yolov8x.pt", label: "COCO · yolov8x.pt", note: "stock COCO vehicles", kind: "vehicle", ready: true },
-                { id: "models/parking_yolo.pt", label: "PKLot bay model · parking_yolo.pt", note: "trained on PKLot: it finds busy / free BAYS", kind: "bay", ready: true }];
+                { id: "yolov8x.pt", label: "COCO · yolov8x.pt", note: "stock COCO vehicles", kind: "vehicle", ready: true, option: "A", family: "coco" },
+                { id: "models/parking_yolo.pt", label: "PKLot bay model · parking_yolo.pt", note: "trained on PKLot: it finds busy / free BAYS", kind: "bay", ready: true, option: "B", family: "aabb" }];
 
 const DIRECT_RESULT = { ...RESULT, kind: "direct", detector: "PKLot bay model · parking_yolo.pt", detected: 3, direct: { conf: 0.25, iou: 0.45 }, tune: undefined,
                         counts: { ...RESULT.counts, free: 1, busy: 2, slots: 3, available: undefined, blocked_objects: undefined } };
@@ -72,6 +72,12 @@ function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [num
       const n = JSON.parse(String(init!.body)).count as number;
       const more = [...ZONE_BAYS(1), ...Array.from({ length: n }, (_, k) => ({ id: 103 + k, name: `A${3 + k}`, poly: sq(0.4 + 0.1 * k) }))];
       return json({ ...ZONE_MERGE(1), zones: [{ ...ZONE_MERGE(1).zones[0], slots: more }], zone_slots: more, added: n, note: null });
+    }
+    if (/\/zones\/1\/layout$/.test(url)) {
+      const b = JSON.parse(String(init!.body));
+      const four = Array.from({ length: b.count }, (_, k) => ({ id: 101 + k, name: `A${1 + k}`, poly: sq(0.1 + 0.1 * k) }));
+      return json({ ...ZONE_MERGE(1), zones: [{ ...ZONE_MERGE(1).zones[0], slots: four }], zone_slots: four, layout: {}, info: { step: 2.5, residual_m: 0.01 },
+                    snap: b.snap ? { snapped: true, support: 0.86, matched: 6, du_m: 0.05, dstep_m: -0.02, reason: "" } : null, warnings: b.margin_m > 0 ? ["A1: too thin for the margin, kept full size"] : [] });
     }
     if (/\/zones\/1\/slots$/.test(url) && method === "PUT") {
       const b = JSON.parse(String(init!.body));
@@ -165,6 +171,98 @@ describe("starting", () => {
     const need = show();
     fireEvent.change(screen.getByTestId("sess-file"), { target: { files: [new File(["x"], "a.jpg", { type: "image/jpeg" })] } });
     await waitFor(() => expect(need).toHaveBeenCalled());
+  });
+});
+
+describe("laying a zone's bays in metres", () => {
+  const ready = async () => {
+    const net = serve();
+    show();
+    await upload();
+    zoneReady();
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(2), { timeout: 4000 });
+    return net;
+  };
+  const lastLayout = (net: Net) => net.calls.filter((c) => c.method === "POST" && c.url.endsWith("/zones/1/layout")).at(-1)!.body!;
+
+  it("places reference dots anywhere, numbers their lines and fits the row to them", async () => {
+    const net = await ready();
+    expect((screen.getByTestId("lay-fit-dots") as HTMLButtonElement).disabled).toBe(true); // no dot yet
+    fireEvent.click(screen.getByTestId("lay-dot-mode"));
+    clickAt(0.3, 0.7);
+    clickAt(0.6, 0.7);
+    expect(screen.getAllByTestId("lay-dot-mark")).toHaveLength(2); // drawn on the picture
+    const idx = screen.getAllByTestId("lay-dot-index");
+    fireEvent.change(idx[0], { target: { value: "2" } });
+    fireEvent.change(idx[1], { target: { value: "5x" } });
+    fireEvent.change(screen.getByTestId("lay-dot-at"), { target: { value: "mid" } });
+    fireEvent.click(screen.getByTestId("lay-fit-dots"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(2));
+    expect(lastLayout(net)).toMatchObject({ mode: "dots", dot_at: "mid", snap: false, margin_m: 0, depth: 5, gap: 0, rows: 1, dots: [{ index: 2 }, { index: 5 }] });
+    expect(lastLayout(net).dots).toHaveLength(2);
+    expect(screen.getByTestId("lay-info").textContent).toContain("step 2.5");
+    fireEvent.click(screen.getAllByTestId("lay-dot-remove")[0]);
+    expect(screen.getAllByTestId("lay-dot")).toHaveLength(1);
+    fireEvent.click(screen.getByTestId("lay-dots-clear"));
+    expect(screen.queryByTestId("lay-dot-list")).toBeNull();
+  });
+
+  it("clones the selected bay across the zone; the button waits for a selection", async () => {
+    const net = await ready();
+    expect((screen.getByTestId("lay-clone") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("zone-edit-mode"));
+    fireEvent.mouseDown(screen.getAllByTestId("zone-bay")[0].querySelector("polygon")!, { button: 0 });
+    fireEvent.change(screen.getByTestId("lay-count"), { target: { value: "4" } });
+    fireEvent.change(screen.getByTestId("lay-master-index"), { target: { value: "1" } });
+    fireEvent.click(screen.getByTestId("lay-clone"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(4));
+    expect(lastLayout(net)).toMatchObject({ mode: "master", count: 4, master_index: 1 });
+    expect(lastLayout(net).master).toHaveLength(4);
+  });
+
+  it("snaps to the painted lines and re-sends the last layout as the inward margin moves, with the result shown", async () => {
+    const net = await ready();
+    fireEvent.click(screen.getByTestId("lay-refit"));
+    await waitFor(() => expect(net.calls.some((c) => c.url.endsWith("/zones/1/layout"))).toBe(true));
+    fireEvent.click(screen.getByTestId("lay-snap"));
+    fireEvent.change(screen.getByTestId("lay-margin"), { target: { value: "0.15" } });
+    expect(screen.getByTestId("lay-margin-value").textContent).toContain("0.15 m");
+    await waitFor(() => expect(lastLayout(net)).toMatchObject({ mode: "refit", margin_m: 0.15, snap: true }), { timeout: 3000 });
+    await waitFor(() => expect(screen.getByTestId("lay-snap-result").textContent).toContain("Snapped: 86 % of the lines found"));
+    expect(screen.getByTestId("lay-answer").textContent).toContain("too thin for the margin");
+  });
+});
+
+describe("the loupe", () => {
+  it("follows the cursor while a point is being placed, and can be switched off", async () => {
+    serve();
+    show();
+    await upload();
+    const canvas = screen.getByTestId("sess-canvas");
+    expect(screen.queryByTestId("sess-loupe")).toBeNull();
+    fireEvent.mouseMove(canvas, { clientX: 100, clientY: 80 });
+    expect(screen.getByTestId("sess-loupe")).toBeTruthy();
+    fireEvent.mouseLeave(canvas);
+    expect(screen.queryByTestId("sess-loupe")).toBeNull();
+    fireEvent.click(screen.getByTestId("sess-loupe-toggle"));
+    fireEvent.mouseMove(canvas, { clientX: 100, clientY: 80 });
+    expect(screen.queryByTestId("sess-loupe")).toBeNull();
+  });
+});
+
+describe("model options A / B / C", () => {
+  it("shows quick pills for the benchmark models and swaps the model without a restart", async () => {
+    serve();
+    show();
+    await screen.findByTestId("sess-settings-toggle");
+    fireEvent.click(await screen.findByTestId("sess-settings-toggle"));
+    const pills = within(await screen.findByTestId("sess-model-options")).getAllByRole("button").map((b) => b.textContent);
+    expect(pills).toEqual(["A · YOLOv8s COCO", "B · PKLot YOLO"]);
+    fireEvent.click(screen.getByText("B · PKLot YOLO"));
+    expect((screen.getByTestId("sess-model") as HTMLSelectElement).value).toBe("models/parking_yolo.pt"); // swapped in place, no restart
+    fireEvent.click(screen.getByText("A · YOLOv8s COCO"));
+    expect((screen.getByTestId("sess-model") as HTMLSelectElement).value).toBe("yolov8x.pt");
   });
 });
 

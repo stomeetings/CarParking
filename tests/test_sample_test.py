@@ -241,3 +241,14 @@ def test_classify_by_vehicles_gives_each_vehicle_to_one_slot_by_its_ground_footp
     pair = sample_test.classify_by_vehicles([slot(10, 100, 100), slot(11, 200, 100)], [car(130, 60, 240, 150)], 1000, 500)
     assert (pair[10][0], pair[11][0]) == ("BUSY", "FREE")
     assert sample_test.classify_by_vehicles([slot(1, 100, 100)], [], 1000, 500) == {1: ("FREE", 0.0)}
+
+
+def test_an_oriented_detection_keeps_its_corners_and_an_axis_aligned_one_does_not():
+    tilted = {**car_in(0), "poly": [(300, 100), (400, 200), (300, 300), (200, 200)], "box": (200, 100, 400, 300)}
+    plain = car_in(1)
+    plain = {**plain, "poly": [(plain["box"][0], plain["box"][1]), (plain["box"][2], plain["box"][1]), (plain["box"][2], plain["box"][3]), (plain["box"][0], plain["box"][3])]}
+    out = go([tilted, plain], NONE)
+    polys = [d.get("poly") for d in out["detections"]]
+    assert sum(p is not None for p in polys) == 1  # only the rotated one
+    p = next(p for p in polys if p)
+    assert p[0] == [0.15, 0.1] and len(p) == 4  # corners as fractions of the 2000 x 1000 frame

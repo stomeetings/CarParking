@@ -342,6 +342,17 @@ def bay_root(tmp_path, monkeypatch):
     return tmp_path
 
 
+def test_the_models_list_names_the_three_benchmark_options_and_their_box_family(env, monkeypatch, scripted, bay_root):
+    (bay_root / "yolov8s.pt").write_bytes(b"x")
+    with app_client(env, monkeypatch) as c:
+        models = c.get("/api/sample-sessions/models", headers=AUTH).json()["models"]
+    by = {m["option"]: m for m in models if m.get("option")}
+    assert sorted(by) == ["A", "B", "C"]
+    assert (by["A"]["family"], by["A"]["kind"]) == ("coco", "vehicle") and by["A"]["id"] == "yolov8s.pt"
+    assert (by["B"]["family"], by["B"]["kind"], by["B"]["id"]) == ("aabb", "bay", "models/parking_yolo.pt")
+    assert (by["C"]["family"], by["C"]["kind"]) == ("obb", "bay") and "obb" in by["C"]["id"] and by["C"]["label"].startswith("PKLot bay model")
+
+
 def bay(x, y, state, conf=0.8, w=120, h=60):
     return {"poly": [(x, y), (x + w, y), (x + w, y + h), (x, y + h)], "box": (x, y, x + w, y + h), "label": "busy_slot" if state else "free_slot", "conf": conf, "state": state}
 
@@ -504,6 +515,32 @@ def test_an_expected_bay_count_fixes_the_zone(env, monkeypatch, scripted, n):
         assert sizes == {n}
         z = c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json()["zones"][0]
         assert len(z["outline"]) == 4  # the outline the bays were cut from (the page shows it)
+
+
+def test_a_zone_can_be_laid_again_from_a_master_bay_dots_a_margin_and_a_refit(env, monkeypatch, scripted):
+    net = Net()
+    with app_client(env, monkeypatch, net) as c:
+        sid, _ = calibrated(c)
+        a, b = (to_image(test_setup_api.CAM, [(-3, 12), (2, 15)]) / (W, H)).tolist()
+        geo = {"method": "geocalib", "reference": {"a": a, "b": b, "metres": float(np.hypot(5, 3))}, "lens": "simple_radial"}
+        j = zone_cal(c, sid, 1, NEAR, expected_bays=5, **geo)
+        assert j["state"] == "done"
+        url = f"/api/sample-sessions/{sid}/zones/1/layout"
+        first = j["result"]["slots"][0]["poly"]
+        r = c.post(url, headers=AUTH, json={"mode": "master", "master": first, "count": 4})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert len(out["zones"][0]["slots"]) == 4 and out["info"]["width_m"] > 0.3 and out["layout"]["count"] == 4
+        thin = c.post(url, headers=AUTH, json={"mode": "master", "master": first, "count": 4, "margin_m": 0.15}).json()
+        full_area = lambda sl: sum(abs(np.cross(np.array(q["poly"])[1] - np.array(q["poly"])[0], np.array(q["poly"])[3] - np.array(q["poly"])[0])) for q in sl)  # noqa: E731
+        assert full_area(thin["zones"][0]["slots"]) < full_area(out["zones"][0]["slots"])
+        again = c.post(url, headers=AUTH, json={"mode": "refit"}).json()
+        assert len(again["zones"][0]["slots"]) == 4 and again["layout"]["rows"] == 1
+        dots = [{"x": q[0], "y": q[1]} for q in (first[0], out["zones"][0]["slots"][2]["poly"][0])]
+        d = c.post(url, headers=AUTH, json={"mode": "dots", "dots": [{"x": dots[0]["x"], "y": dots[0]["y"], "index": 0}, {"x": dots[1]["x"], "y": dots[1]["y"], "index": 2}], "count": 4})
+        assert d.status_code == 200 and len(d.json()["zones"][0]["slots"]) == 4, d.text
+        assert c.post(url, headers=AUTH, json={"mode": "dots", "count": 3}).status_code == 422  # no dots
+        assert c.post(f"/api/sample-sessions/{sid}/zones/9/layout", headers=AUTH, json={"mode": "refit"}).status_code == 404
 
 
 def test_sam_for_a_zone_is_cut_to_its_outline_and_does_not_replace_the_surface(env, monkeypatch, scripted):

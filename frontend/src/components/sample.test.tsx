@@ -41,6 +41,29 @@ const NONE: Expected = { free: "", busy: "", blocked: "" };
 const showResult = (expected: Expected = NONE) => render(<ResultPanel result={RESULT} label="lot.jpg" expected={expected} />);
 
 describe("a result", () => {
+  it("zooms the result picture in and out, and fits it again, so a single bay can be inspected", () => {
+    showResult();
+    const layer = screen.getByTestId("res-layer");
+    expect(screen.getByTestId("res-zoom").textContent).toBe("100 %");
+    expect((screen.getByTestId("res-zoom-out") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId("res-zoom-in"));
+    expect(screen.getByTestId("res-zoom").textContent).toBe("150 %");
+    expect(layer.style.transform).toContain("scale(1.5)");
+    fireEvent.click(screen.getByTestId("res-zoom-reset"));
+    expect(screen.getByTestId("res-zoom").textContent).toBe("100 %");
+    expect(screen.getByTestId("sample-overlay")).toBeTruthy(); // the slots and boxes live inside the zoomed layer
+  });
+
+  it("draws an oriented (YOLO-OBB) detection as a tilted yellow outline, an axis-aligned one as a box", () => {
+    const tilted = { label: "busy_slot", conf: 0.8, src: "", kind: "vehicle" as const, box: [0.1, 0.1, 0.3, 0.3] as [number, number, number, number],
+                     poly: [[0.2, 0.1], [0.3, 0.2], [0.2, 0.3], [0.1, 0.2]] as [number, number][] };
+    render(<ResultPanel result={{ ...RESULT, detections: [tilted] }} label="lot.jpg" expected={NONE} />);
+    const obb = within(screen.getByTestId("sample-overlay")).getByTestId("overlay-obb");
+    expect(obb.getAttribute("stroke")).toBe("#f9b115");
+    expect(obb.getAttribute("points")?.split(" ")).toHaveLength(4);
+    expect(within(screen.getByTestId("sample-overlay")).queryAllByTestId("overlay-box")).toHaveLength(0);
+  });
+
   it("", () => {
     showResult();
     const overlay = screen.getByTestId("sample-overlay");

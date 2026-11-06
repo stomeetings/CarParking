@@ -111,6 +111,26 @@ class CalibrateIn(BaseModel):
     rows: int = Field(1, ge=0, le=6)  # rows of bays in a zone, from its front edge (1 by default; 0 = automatic: the zone's depth over a bay's length)
 
 
+class LayoutIn(BaseModel):
+    """Lay a calibrated zone's bays from a few user marks, in ground metres (carparking/layout.py): reference dots anywhere on the separator lines, one master bay
+    to clone, or a re-fit of the bays as they stand (after the camera changed). Optional setup-time snap to the painted lines and an inward margin in metres."""
+    mode: str = Field(pattern="^(dots|master|refit)$")
+    count: int = Field(1, ge=1, le=ss.MAX_ZONE_BAYS)
+    dots: list[dict] | None = Field(None, max_length=40)  # [{"x", "y" (fractions), "index"?, "at"? front|mid|back}]
+    master: list[list[float]] | None = Field(None, min_length=4, max_length=4)  # the master bay's 4 corners, front-left first
+    master_index: int = Field(0, ge=0, le=ss.MAX_ZONE_BAYS)
+    width: float | None = Field(None, ge=0.3, le=8.0)
+    depth: float = Field(5.0, ge=1.0, le=12.0)
+    gap: float = Field(0.0, ge=0.0, le=2.0)
+    rows: int = Field(1, ge=1, le=6)
+    row_gap: float = Field(0.0, ge=0.0, le=10.0)
+    dot_at: str = Field("front", pattern="^(front|mid|back)$")
+    heading: float | None = Field(None, ge=-360, le=360)
+    fit_zone: bool = False  # dots mode: the bay width is the zone's length over the count exactly (the dots then give only direction and alignment)
+    snap: bool = False  # snap the separators to the painted lines (setup only)
+    margin_m: float = Field(0.0, ge=0.0, le=0.5)  # pull every bay in by this many metres on the ground
+
+
 class SlotsIn(BaseModel):
     slots: list[dict] = Field(min_length=1, max_length=200)
     outline: list[list[float]] | None = Field(None, min_length=3, max_length=200)  # the zone's outline / ground, when the page turned it with its bays
@@ -166,14 +186,19 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                 if p.name in seen:
                     continue
                 seen.add(p.name)
-                if p.name.startswith("parking_yolo"):
-                    out.append({"id": rel, "label": f"PKLot bay model · {p.name}", "kind": "bay", "weights": rel, "ready": True,
-                                "note": "trained on PKLot: it finds busy / free BAYS in top-down lots, not cars; on an angled picture it finds nothing"})
+                if p.name.startswith("parking_yolo") and "obb" in p.name.lower():  # option C: oriented boxes (task "obb"): tilted bays keep their slant
+                    out.append({"id": rel, "label": f"PKLot bay model (oriented boxes) · {p.name}", "kind": "bay", "weights": rel, "ready": True, "option": "C", "family": "obb",
+                                "note": "option C, PKLot YOLO-OBB: busy / free BAYS as rotated boxes (angled / tilted slots); trained on top-down lots, weak on low angled views"})
+                elif p.name.startswith("parking_yolo"):  # option B: axis-aligned boxes
+                    out.append({"id": rel, "label": f"PKLot bay model · {p.name}", "kind": "bay", "weights": rel, "ready": True, "option": "B", "family": "aabb",
+                                "note": "option B, PKLot YOLO (axis-aligned boxes): trained on PKLot, it finds busy / free BAYS in top-down lots, not cars; on an angled picture it finds nothing"})
                 elif p.name.startswith("cam_"):
                     out.append({"id": rel, "label": f"Camera fine-tune · {p.name}", "kind": "vehicle", "weights": rel, "ready": True,
                                 "note": "fine-tuned on one camera's view"})
                 else:
-                    out.append({"id": rel, "label": f"COCO · {p.name}", "kind": "vehicle", "weights": rel, "ready": True, "note": "stock COCO vehicles"})
+                    base = p.name == "yolov8s.pt"  # option A: the lightweight COCO baseline every other model is compared with
+                    out.append({"id": rel, "label": f"COCO · {p.name}", "kind": "vehicle", "weights": rel, "ready": True, "family": "coco", **({"option": "A"} if base else {}),
+                                "note": ("option A, the COCO baseline: " if base else "") + "stock COCO vehicles"})
         for name in DOWNLOADABLE:
             if name not in seen:
                 out.append({"id": f"models/{name}", "label": f"COCO · {name} (downloads on first use)", "kind": "vehicle", "weights": f"models/{name}",
@@ -490,6 +515,53 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
         note = None if added == body.count else (f"{added} of {body.count} added: the next one would lie outside the picture" if added < body.count and len(bays) < ss.MAX_ZONE_BAYS
                                                  else f"{added} of {body.count} added: a zone holds at most {ss.MAX_ZONE_BAYS} bays")
         return {**zone_view(s), "added": added, "note": note}
+
+    @app.post("/api/sample-sessions/{sid}/zones/{zone}/layout", dependencies=admin)
+    def lay_zone(sid: str, zone: int, body: LayoutIn):
+        """The zone's bays laid from marks in ground metres (see LayoutIn). Replaces the zone's bays; the lattice is returned so the page can show its metres."""
+        from carparking import layout as lo
+        from carparking import layout_extra as lx
+        from carparking.layout_snap import snap_lattice
+        s = session_of(sid)
+        z = zone_of(s, zone)
+        cam = ss.ground_camera(z["record"], s["w"], s["h"])
+        if cam is None:
+            raise HTTPException(409, "this zone has no usable calibration: calibrate it again")
+        w, h = s["w"], s["h"]
+        try:
+            if body.mode == "dots":
+                if not body.dots:
+                    raise HTTPException(422, "dots: place at least one reference dot")
+                dots = [lx.Dot((float(d["x"]), float(d["y"])), None if d.get("index") is None else int(d["index"]), d.get("at")) for d in body.dots]
+                lay, info = lx.layout_from_dots(cam, dots, body.count, w, h, body.width, body.depth, body.gap, body.rows, body.row_gap, body.dot_at, body.heading,
+                                                outline_px=z["outline"], fit_zone=body.fit_zone)  # (the zone polygon is the row's extent; the dots only guide)
+            elif body.mode == "master":
+                if body.master is None:
+                    raise HTTPException(422, "master: draw the master bay (4 corners)")
+                lay, info = lx.clone_master(cam, body.master, body.count, w, h, body.master_index, body.rows, body.gap, body.row_gap)
+            else:
+                if not z["slots"]:
+                    raise HTTPException(409, "this zone has no bays to re-fit")
+                lay = lo.refit(z["slots"], cam, w, h, body.count if body.count > 1 else None)
+                info = {}
+            report = None
+            if body.snap:
+                lay, report = snap_lattice(s["frame"], lay, cam)
+            if body.margin_m > 0:
+                slots, kept_full = lx.inset_slots(lay, cam, w, h, body.margin_m)
+            else:
+                slots, kept_full = lay.to_slots(cam, w, h), []
+        except lo.LayoutError as e:
+            raise HTTPException(422, str(e)) from None
+        if not slots:
+            raise HTTPException(422, "no bay of the layout is inside the picture")
+        bays, over = ss.zone_bays(slots, zone, z["outline"], w, h)
+        z["slots"], z["layout"] = bays, lay.to_dict()
+        z["calibration"] = {**z["calibration"], "bays": len(bays)}
+        warn = [f"{over} bay(s) over the {ss.MAX_ZONE_BAYS} of one zone were left out"] if over else []
+        warn += list((info or {}).pop("warnings", []) or [])
+        warn += [f"{n}: too thin for the {body.margin_m} m margin, kept full size" for n in kept_full]
+        return {**zone_view(s), "layout": z["layout"], "info": info, "snap": report, "warnings": warn}
 
     @app.put("/api/sample-sessions/{sid}/zones/{zone}/slots", dependencies=admin)
     def edit_zone(sid: str, zone: int, body: SlotsIn):

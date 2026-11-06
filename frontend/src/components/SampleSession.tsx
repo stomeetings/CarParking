@@ -7,6 +7,8 @@ import { type DrawnSlot, type Pt, area, moveSlot, moveVertex, pt } from "../slot
 import { type Expected, ExpectedInputs, type Layer, LayerBoxes, MAX_BYTES, ResultPanel, type SampleResult, readFile } from "./SampleResult";
 import { BayAdjust, useBayHistory } from "./BayAdjust";
 import { DirectSlotCanvas } from "./DirectSlotCanvas";
+import { Sub } from "./Accordion";
+import { type DotNext, type LayoutAnswer, type LayoutDot, type LayoutRequest, LayoutTools } from "./LayoutTools";
 import { Button, Card, Pill } from "./ui";
 import { MAX_ZOOM, MIN_ZOOM, useZoomPan } from "./useZoomPan";
 
@@ -41,7 +43,7 @@ interface Session {
 /** The detector and rule settings sent with every model step of a session (the server keeps the last ones). Ranges mirror the server's. */
 export interface Tune { model: string; conf: number; iou: number; footprint: number; encroach: number }
 export const TUNE_DEFAULTS: Tune = { model: "default", conf: 0.2, iou: 0.45, footprint: 0.5, encroach: 0.3 };
-interface ModelOption { id: string; label: string; note: string; kind: "vehicle" | "bay"; ready: boolean }
+interface ModelOption { id: string; label: string; note: string; kind: "vehicle" | "bay"; ready: boolean; option?: "A" | "B" | "C"; family?: "coco" | "aabb" | "obb" }
 const SLIDERS: { key: Exclude<keyof Tune, "model">; label: string; min: number; max: number; step: number; pct?: boolean; help: string }[] = [
   { key: "conf", label: "Confidence", min: 0.1, max: 0.75, step: 0.01, help: "Lower finds more distant and half-hidden cars (and a few false ones). A live camera runs at 0.30." },
   { key: "iou", label: "NMS overlap (IoU)", min: 0.2, max: 0.7, step: 0.01, help: "Two boxes overlapping more than this are one car. Lower merges neighbours; higher keeps cars that stand close together." },
@@ -50,7 +52,7 @@ const SLIDERS: { key: Exclude<keyof Tune, "model">; label: string; min: number; 
 ];
 
 interface Service { service: "up" | "down"; loaded: unknown; command: string }
-type Mode = "pins" | "ref" | "polygon" | "sam" | "edit" | "zone-outline" | "zone-sam";
+type Mode = "pins" | "ref" | "polygon" | "sam" | "edit" | "zone-outline" | "zone-sam" | "zone-dot";
 /** A zone being set up on the page: its outline (drawn), SAM's clicks in it and SAM's surface inside it (or none: the outline is the surface). */
 /** What Undo / Redo put back: the zones' bays and which of them are unsaved, and each zone's outline and SAM ground (a whole-zone turn moves them). */
 interface EditSnap { merge: ZoneMerge; dirty: number[]; shapes: Record<number, { outline: Pt[]; surface: Pt[] | null }> }
@@ -65,6 +67,8 @@ const zoneLetter = (id: number) => String.fromCharCode(65 + ((id - 1) % 26));
 type Method = "rectangle" | "geocalib" | "topdown";
 
 const BASE = "/api/sample-sessions";
+const LOUPE = 150; // px: the magnifier's diameter
+const LOUPE_ZOOM = 5; // times the picture as shown
 const PIN_HELP = "Click the 4 corners of a rectangle on the ground whose sides you know (a parking bay, a painted box), in order around it: 1 → 2 is the first side, 2 → 3 the second.";
 
 /** Dynamic slots on / off for a run. Off (the default): the run judges exactly the fixed / configured bays. On: the live auto grid's vehicle-driven
@@ -140,6 +144,15 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const [zoneDirty, setZoneDirty] = useState<number[]>([]); // zones whose bays were moved / reshaped here and not saved yet
   const [nextN, setNextN] = useState("3");
   const [dynamic, setDynamic] = useState(false); // dynamic slots (bays for vehicles off the layout, sub-bays, footprint claim): only when switched on
+  const [pendingLay, setPendingLay] = useState<{ zid: number; req: LayoutRequest } | null>(null); // a layout asked for before the zone had a camera: laid when its calibration lands
+  // the setup panels fold: only the step you are on is open (a click overrides; null = the automatic choice)
+  const [secs, setSecs] = useState<Record<string, boolean | null>>({ scale: null, zones: null, review: null, outline: null, bays: null });
+  const flipSec = (k: string, auto: boolean) => setSecs((o) => ({ ...o, [k]: !(o[k] ?? auto) }));
+  const [nextDot, setNextDot] = useState<DotNext>({ index: "", at: "" });
+  const [layDots, setLayDots] = useState<(LayoutDot & { zone: number })[]>([]); // reference dots placed on a zone's separator lines
+  const [layAnswer, setLayAnswer] = useState<LayoutAnswer | null>(null);
+  const [loupeOn, setLoupeOn] = useState(true); // a magnifier at the cursor while placing points / dragging corners, for sub-pixel placement
+  const [loupe, setLoupe] = useState<{ cx: number; cy: number; p: Pt; pw: number } | null>(null);
   const [pinned, setPinned] = useState(true); // the picture stays at the top of the screen while the controls scroll
   const [zoneNote, setZoneNote] = useState<string | null>(null);
 
@@ -237,6 +250,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       if (last && Math.hypot((p[0] - last[0]) * w, (p[1] - last[1]) * h) < w / 200) return; // the second click of a double-click
       return setZone(z.id, { outline: [...z.outline, p], surface: null });
     }
+    if (mode === "zone-dot" && activeZone != null) return setLayDots([...layDots, { p, index: nextDot.index, at: nextDot.at, zone: activeZone }]);
     if (mode === "pins" && pins.length < 4) setPins([...pins, p]);
     else if (mode === "ref" && ref.length < 2) setRef([...ref, p]);
   };
@@ -378,6 +392,34 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
     }
   };
 
+  // lay the zone's bays in ground metres from marks (dots / a master bay / a re-fit), with the optional snap and inward margin: the server answers with the new bays
+  const applyLayout = async (zid: number, req: LayoutRequest) => {
+    if (!session) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (!(await saveZones())) return;
+      const r = await api.post<ZoneMerge & LayoutAnswer>(`${BASE}/${session.id}/zones/${zid}/layout`, req);
+      setMerge({ zones: r.zones, zone_slots: r.zone_slots, zone_dropped: r.zone_dropped });
+      setLayAnswer({ info: r.info, snap: r.snap, warnings: r.warnings });
+      history.clear(); // (the server laid new bays: an older snapshot would bring the old ones back)
+      setSel(null);
+    } catch (e) {
+      fail(e, "Laying the bays");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!pendingLay) return;
+    if (job?.state === "error") return setPendingLay(null);
+    if (job?.state === "done" && merge.zones.some((z) => z.zone === pendingLay.zid)) {
+      setPendingLay(null);
+      void applyLayout(pendingLay.zid, pendingLay.req);
+    }
+  }); // (every render: applyLayout is a fresh closure over the latest merge)
+
   const startPan = (e: React.MouseEvent) => {
     if (e.button === 1 || (e.button === 0 && panTool)) {
       e.preventDefault();
@@ -385,6 +427,10 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
     }
   };
   const onMove = (e: React.MouseEvent) => {
+    if (loupeOn && session && viewport.current && stage.current) { // the magnifier follows the cursor while a point is being placed
+      const vr = viewport.current.getBoundingClientRect();
+      setLoupe({ cx: e.clientX - vr.left, cy: e.clientY - vr.top, p: at(e), pw: stage.current.getBoundingClientRect().width });
+    }
     if (panning) {
       panBy(e.clientX - panning.x, e.clientY - panning.y);
       return setPanning({ x: e.clientX, y: e.clientY });
@@ -453,7 +499,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   };
   const zonesCard = () => (
     <>
-      <Card title={`2 · Zones (${zones.length})`}>
+      <Fold id="zones" open={secs.zones ?? true} onToggle={() => flipSec("zones", true)} title={`2 · Zones (${zones.length})`}>
         <p className="text-xs text-muted">
           Outline each part of the lot that lies at its own angle or depth (a row, a block) as a zone. SAM finds the parking ground inside it and GeoCalib (or the ground
           pins of step 1) calibrates that zone on its own, so its bay grid follows its own perspective. Every zone's bays are then run together as one list.
@@ -483,6 +529,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               <label className="block text-xs text-muted">Name
                 <input className="ml-1 w-32 rounded-md border border-line px-1.5 py-1 text-sm text-ink" value={az.name} data-testid="zone-name" onChange={(e) => setZone(az.id, { name: e.target.value })} />
               </label>
+              <Sub id="zone-outline" title="Outline, SAM and calibrate" hint={cal ? `${cal.calibration.bays} bay(s)` : az.outline.length >= 3 ? "outlined" : "not drawn"}
+                   open={secs.outline ?? true} onToggle={() => flipSec("outline", true)}>
               <div className="flex flex-wrap gap-2">
                 <Button variant={mode === "zone-outline" ? "primary" : "outline"} onClick={() => setMode("zone-outline")} data-testid="zone-draw"><Crosshair size={14} /> Draw outline ({az.outline.length})</Button>
                 <Button variant="ghost" onClick={() => setZone(az.id, { outline: az.outline.slice(0, -1), surface: null })} disabled={!az.outline.length} data-testid="zone-undo">Undo corner</Button>
@@ -522,8 +570,10 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                   {cal.calibration.warnings.map((t) => <p key={t} className="text-warning">{t}</p>)}
                 </div>
               )}
+              </Sub>
               {cal && (
-                <div className="space-y-2 border-t border-line pt-2" data-testid="zone-tools">
+                <Sub id="zone-bays" title="Add, edit and fine-tune bays" hint={sel != null ? "a bay is selected" : "move, rotate, size"} open={secs.bays ?? sel != null} onToggle={() => flipSec("bays", sel != null)}>
+                <div className="space-y-2" data-testid="zone-tools">
                   <div className="flex flex-wrap items-center gap-2">
                     <Button variant="outline" onClick={() => void extendZone(az.id, 1)} disabled={busy || running} data-testid="zone-next-1"
                             title="One more bay after the last one, at the same spacing on the ground">Add next 1</Button>
@@ -545,12 +595,27 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                   )}
                   {zoneNote && <p className="text-xs text-warning" data-testid="zone-note">{zoneNote}</p>}
                 </div>
+                </Sub>
               )}
+              <LayoutTools zoneName={az.name} calibrated={!!cal} next={nextDot} onNext={setNextDot} bays={bays.filter((b) => Math.floor(b.id / 100) === az.id).length} expected={az.expected}
+                           master={(() => { const b = bays.find((x) => x.id === sel && Math.floor(x.id / 100) === az.id); return b ? (b.poly as Pt[]) : null; })()}
+                           dots={layDots.filter((d) => d.zone === az.id)} placing={mode === "zone-dot"} busy={busy || running} answer={layAnswer}
+                           onPlace={() => setMode(mode === "zone-dot" ? (cal ? "edit" : "zone-outline") : "zone-dot")}
+                           onDotIndex={(i, v) => setLayDots((all) => { const mine = all.filter((d) => d.zone === az.id); const target = mine[i]; return all.map((d) => (d === target ? { ...d, index: v } : d)); })}
+                           onDotAt={(i, v) => setLayDots((all) => { const target = all.filter((d) => d.zone === az.id)[i]; return all.map((d) => (d === target ? { ...d, at: v } : d)); })}
+                           onDotRemove={(i) => setLayDots((all) => { const target = all.filter((d) => d.zone === az.id)[i]; return all.filter((d) => d !== target); })}
+                           onDotsClear={() => setLayDots((all) => all.filter((d) => d.zone !== az.id))}
+                           onApply={(req) => {
+                             if (cal) return void applyLayout(az.id, req);
+                             if (why) return setMessage(`Dots are kept. To lay the bays, first: ${why}.`); // (the camera comes from the calibration)
+                             setPendingLay({ zid: az.id, req });
+                             void calibrateZone(az);
+                           }} />
             </div>
           );
         })()}
-      </Card>
-      <Card title={`3 · Review and run (${bays.length} bays)`}>
+      </Fold>
+      <Fold id="review" open={secs.review ?? bays.length > 0} onToggle={() => flipSec("review", bays.length > 0)} title={`3 · Review and run (${bays.length} bays)`}>
         {merge.zone_dropped.length > 0 && (
           <p className="mb-2 text-xs text-muted" data-testid="zone-dropped">
             {merge.zone_dropped.length} bay(s) of overlapping zones counted once: {merge.zone_dropped.slice(0, 4).map((d) => `${d.name} = ${d.same_as}`).join(", ")}{merge.zone_dropped.length > 4 ? " …" : ""}
@@ -578,7 +643,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           </Button>
           <ExpectedInputs value={expected} onChange={setExpected} />
         </div>
-      </Card>
+      </Fold>
     </>
   );
 
@@ -621,6 +686,16 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       } actions={settingsOpen ? <Button variant="ghost" onClick={() => setTune({ ...TUNE_DEFAULTS })} data-testid="sess-settings-reset">Reset to defaults</Button> : undefined}>
         {settingsOpen ? (
           <div className="space-y-3" data-testid="sess-settings">
+            {models.some((m) => m.option) && (
+              <div className="flex flex-wrap items-center gap-1.5" data-testid="sess-model-options">
+                <span className="text-xs font-semibold tracking-wide text-muted uppercase">Compare</span>
+                {models.filter((m) => m.option).sort((a, b) => a.option!.localeCompare(b.option!)).map((m) => (
+                  <Pill key={m.id} active={tune.model === m.id} onClick={() => setTune({ ...tune, model: m.id })} title={m.note}>
+                    {m.option} · {m.family === "obb" ? "PKLot YOLO-OBB" : m.family === "aabb" ? "PKLot YOLO" : "YOLOv8s COCO"}
+                  </Pill>
+                ))}
+              </div>
+            )}
             <label className="block text-xs text-muted">YOLO model
               <select className="mt-1 block w-full rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink" value={tune.model} data-testid="sess-model"
                       onChange={(e) => setTune({ ...tune, model: e.target.value })}>
@@ -703,18 +778,28 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               <Pill active={panTool} onClick={() => setPanTool(!panTool)} title="Drag the picture instead of placing points (the middle mouse button does this in every mode; the wheel zooms)"><Hand size={12} /> Pan</Pill>
               <Button variant="outline" onClick={() => zoomCentre(1.5)} disabled={view.s >= MAX_ZOOM} data-testid="sess-zoom-in" title="Zoom in (or the mouse wheel)"><ZoomIn size={13} /></Button>
               <Button variant="outline" onClick={() => zoomCentre(1 / 1.5)} disabled={view.s <= MIN_ZOOM} data-testid="sess-zoom-out" title="Zoom out"><ZoomOut size={13} /></Button>
+              <Button variant={loupeOn ? "primary" : "ghost"} onClick={() => (setLoupeOn(!loupeOn), setLoupe(null))} data-testid="sess-loupe-toggle"
+                      title="A 5x magnifier at the cursor while you place points or drag corners">Loupe</Button>
               <Button variant="ghost" onClick={fit} disabled={view.s === 1} data-testid="sess-zoom-reset">Fit</Button>
               <span className="text-xs text-muted" data-testid="sess-zoom">{Math.round(view.s * 100)} %</span>
             </>
           }>
             <div className={pinned ? "mx-auto w-full max-w-[calc(46vh*var(--ar))] xl:max-w-[calc((100vh-7rem)*var(--ar))]" : "w-full"} style={{ "--ar": w / h } as React.CSSProperties}>
             <div ref={viewport} className="relative w-full select-none overflow-hidden bg-ink" style={{ aspectRatio: `${w} / ${h}` }} data-testid="sess-stage">
+             {loupeOn && loupe && session && (mode !== "edit" || drag) ? (
+               <div className="pointer-events-none absolute z-20 overflow-hidden rounded-full border-2 border-white shadow-lg" data-testid="sess-loupe"
+                    style={{ width: LOUPE, height: LOUPE, left: loupe.cx + 24, top: loupe.cy - LOUPE - 24 < 0 ? loupe.cy + 24 : loupe.cy - LOUPE - 24,
+                             backgroundImage: `url(${session.image})`, backgroundRepeat: "no-repeat", backgroundSize: `${loupe.pw * LOUPE_ZOOM}px ${(loupe.pw * LOUPE_ZOOM * h) / w}px`,
+                             backgroundPosition: `${LOUPE / 2 - loupe.p[0] * loupe.pw * LOUPE_ZOOM}px ${LOUPE / 2 - loupe.p[1] * ((loupe.pw * h) / w) * LOUPE_ZOOM}px` }}>
+                 <span className="absolute top-1/2 left-0 h-px w-full bg-white/80" /><span className="absolute top-0 left-1/2 h-full w-px bg-white/80" />
+               </div>
+             ) : null}
              <div ref={stage} className="absolute top-0 left-0 h-full w-full" style={{ transform, transformOrigin: "0 0" }} data-testid="sess-layer">
               <img src={session.image} alt="Sample picture" className="absolute inset-0 h-full w-full object-fill" draggable={false} />
               <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="absolute inset-0 h-full w-full"
                    style={{ cursor: panning ? "grabbing" : panTool ? "grab" : mode !== "edit" ? "crosshair" : undefined }}
                    onMouseDown={startPan} onClick={click} onMouseMove={onMove} onMouseUp={() => (setDrag(null), setPanning(null))}
-                   onMouseLeave={() => (setDrag(null), setPanning(null))}
+                   onMouseLeave={() => (setDrag(null), setPanning(null), setLoupe(null))}
                    data-testid="sess-canvas">
                 {<>
                   {[...zones.filter((z) => z.id !== activeZone), ...(az ? [az] : [])].map((z) => {
@@ -726,6 +811,12 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                                                           pointerEvents="none" data-testid="zone-outline" />}
                         {z.surface && <polygon points={points(z.surface, w, h)} fill={`${colour}22`} stroke={colour} strokeWidth={1} vectorEffect="non-scaling-stroke" pointerEvents="none" data-testid="zone-surface" />}
                         {on && z.outline.map((p, i) => <circle key={`o${i}`} cx={px(p)[0]} cy={px(p)[1]} r={dot * 0.8} fill={colour} pointerEvents="none" />)}
+                        {on && layDots.filter((d) => d.zone === z.id).map((d, i) => (
+                          <g key={`d${i}`} pointerEvents="none" data-testid="lay-dot-mark">
+                            <circle cx={px(d.p)[0]} cy={px(d.p)[1]} r={dot * 1.2} fill="#f9b115" stroke="black" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                            <text x={px(d.p)[0] + dot * 1.8} y={px(d.p)[1] - dot * 1.2} fontSize={font} fontWeight={700} fill="white" stroke="black" strokeWidth={font / 14} paintOrder="stroke">{d.index || i + 1}</text>
+                          </g>
+                        ))}
                         {on && z.sam.map(({ p, keep }, i) => <circle key={`s${i}`} cx={px(p)[0]} cy={px(p)[1]} r={dot} fill={keep ? "#0ea5b7" : "#dc2626"} pointerEvents="none" data-testid="zone-sam-click" />)}
                         {bays.filter((b) => Math.floor(b.id / 100) === z.id).map((b) => (
                           <g key={b.id} data-testid="zone-bay" data-id={b.id}>
@@ -761,7 +852,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           </Card>
 
           <div className="space-y-4">
-            <Card title="1 · Scale">
+            <Fold id="scale" open={secs.scale ?? scaleReason() !== null} onToggle={() => flipSec("scale", scaleReason() !== null)}
+                  title={<span>1 · Scale {scaleReason() === null ? <span className="text-xs font-normal text-[#1b7a3e]">· set</span> : null}</span>}>
               <div className="flex gap-1.5" data-testid="sess-method">
                 <Pill active={method === "geocalib"} onClick={() => (setMethod("geocalib"), setMode("ref"))} title="GeoCalib in the setup service for the lens and tilt; one typed distance for the scale">GeoCalib + distance</Pill>
                 <Pill active={method === "topdown"} onClick={() => (setMethod("topdown"), setMode("ref"))}
@@ -803,7 +895,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                   </div>
                 </div>
               )}
-            </Card>
+            </Fold>
 
             {zonesCard()}
           </div>

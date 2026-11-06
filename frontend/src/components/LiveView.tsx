@@ -272,6 +272,14 @@ export function BoxShape({ det, w, h, ghost, onHover }: {
   const dropped = det.kind === "vehicle" && !!det.rejected;
   const color = dropped ? "#9da5b1" : det.kind === "vehicle" ? "#f9b115" : "#d63384";
   const tag = dropped ? `ignored: ${det.rejected!.replace("_", " ")}` : "";
+  if (det.poly && det.poly.length === 4 && !dropped) {  // an oriented box (YOLO-OBB): its tilted outline, the same yellow
+    const pts = det.poly.map(([x, y]) => `${x * w},${y * h}`).join(" ");
+    return (
+      <polygon data-testid="overlay-obb" points={pts} fill="transparent" stroke={ghost ? "transparent" : color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" className="cursor-help"
+               style={{ pointerEvents: "all" }}
+               onMouseMove={(e) => onHover(e, detectionTitle(det), ["oriented box (rotated)", det.src === "zoom" ? "found by the zoomed re-check" : "whole-frame detection"], color)} />
+    );
+  }
   return (
     <>
       <rect data-testid="overlay-box" data-rejected={dropped ? det.rejected : undefined} x={x1 * w} y={y1 * h} width={(x2 - x1) * w} height={(y2 - y1) * h} fill="transparent"

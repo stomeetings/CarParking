@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
+import { Hand, ZoomIn, ZoomOut } from "lucide-react";
 import { BLOCK_HATCH, ENCROACH_HATCH, SLOT_COLORS, baySource, outsidePath } from "../lib";
 import type { Detection, ParkingEvent, Slot, Snapshot } from "../types";
 import { BoxShape, SlotShape } from "./LiveView";
 import { Counters, EventTicker } from "./SidePanel";
-import { BlockHatch, Card, EncroachHatch } from "./ui";
+import { BlockHatch, Button, Card, EncroachHatch } from "./ui";
+import { MAX_ZOOM, MIN_ZOOM, useZoomPan } from "./useZoomPan";
 
 /** The server's answer to a sample run: the dashboard's own data for one picture, plus what the run logged (in a throw-away log). */
 export interface SampleResult {
@@ -88,6 +90,8 @@ export function ExpectedInputs({ value, onChange }: { value: Expected; onChange:
 export function ResultPanel({ result, label, expected }: { result: SampleResult; label: string; expected: Expected }) {
   const [hover, setHover] = useState<{ x: number; y: number; title: string; lines: string[] } | null>(null);
   const stage = useRef<HTMLDivElement>(null);
+  const { view, zoomCentre, panBy, fit, transform } = useZoomPan(stage); // the wheel zooms about the pointer, a drag moves the picture
+  const [grab, setGrab] = useState(false);
   const [w, h] = result.shape;
   const show = (e: React.MouseEvent, title: string, lines: string[]) => {
     const box = stage.current?.getBoundingClientRect();
@@ -98,8 +102,19 @@ export function ResultPanel({ result, label, expected }: { result: SampleResult;
   const checks = EXPECT.filter(([k]) => expected[k].trim() !== "").map(([k, name]) => ({ k, label: name, want: Number(expected[k]), got: seen[k] }));
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,1.4fr)]">
-      <Card title={<span>Result · {label}</span>} bodyClass="p-0">
-        <div ref={stage} className="relative w-full bg-ink" style={{ aspectRatio: `${w} / ${h}` }} onMouseLeave={() => setHover(null)} data-testid="sample-stage">
+      <Card title={<span>Result · {label}</span>} bodyClass="p-0" actions={
+        <>
+          <Button variant="outline" onClick={() => zoomCentre(1.5)} disabled={view.s >= MAX_ZOOM} data-testid="res-zoom-in" title="Zoom in (or the mouse wheel)"><ZoomIn size={13} /></Button>
+          <Button variant="outline" onClick={() => zoomCentre(1 / 1.5)} disabled={view.s <= MIN_ZOOM} data-testid="res-zoom-out" title="Zoom out"><ZoomOut size={13} /></Button>
+          <Button variant="ghost" onClick={fit} disabled={view.s === 1} data-testid="res-zoom-reset">Fit</Button>
+          <span className="text-xs text-muted" data-testid="res-zoom">{Math.round(view.s * 100)} %</span>
+          <span className="flex items-center gap-1 text-xs text-muted"><Hand size={12} /> drag to move</span>
+        </>
+      }>
+        <div ref={stage} className="relative w-full select-none overflow-hidden bg-ink" style={{ aspectRatio: `${w} / ${h}`, cursor: view.s > 1 ? (grab ? "grabbing" : "grab") : undefined }}
+             onMouseLeave={() => (setHover(null), setGrab(false))} onMouseDown={(e) => e.button === 0 && setGrab(true)} onMouseUp={() => setGrab(false)}
+             onMouseMove={(e) => grab && view.s > 1 && panBy(e.movementX, e.movementY)} data-testid="sample-stage">
+         <div className="absolute top-0 left-0 h-full w-full" style={{ transform, transformOrigin: "0 0" }} data-testid="res-layer">
           <img src={result.image} alt="Sample picture" className="absolute inset-0 h-full w-full object-fill" draggable={false} />
           <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="absolute inset-0 h-full w-full" shapeRendering="geometricPrecision"
                data-testid="sample-overlay">
@@ -109,6 +124,7 @@ export function ResultPanel({ result, label, expected }: { result: SampleResult;
             {result.slots.map((s) => <SlotShape key={s.id} slot={s} w={w} h={h} ghost={false} onHover={(e, t, l) => show(e, t, l)} source={baySource(undefined, s.id)} />)}
             {result.detections.map((d, i) => <BoxShape key={i} det={d} w={w} h={h} ghost={false} onHover={(e, t, l) => show(e, t, l)} />)}
           </svg>
+         </div>
           {hover && (
             <div className="pointer-events-none absolute z-20 max-w-xs rounded-md bg-ink/90 px-2.5 py-1.5 text-xs text-white shadow"
                  style={{ left: hover.x + 12, top: hover.y + 12 }}>

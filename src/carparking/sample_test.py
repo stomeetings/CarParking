@@ -140,7 +140,15 @@ def run_sample(frame, run: dict, slots: list[dict], raw: list[dict], layers: dic
         h, w = frame.shape[:2]
         dropped = _rejected_boxes(tr)
         box = lambda d: [round(d["box"][0] / w, 4), round(d["box"][1] / h, 4), round(d["box"][2] / w, 4), round(d["box"][3] / h, 4)]  # noqa: E731
-        dets = [{"label": d["label"], "conf": round(float(d["conf"]), 3), "src": d.get("src") or "", "kind": kind, "box": box(d),
+        def poly(d):  # an oriented (rotated) detection keeps its corners so the page can draw it tilted; an axis-aligned one needs only its box
+            pts = d.get("poly")
+            if not pts or len(pts) != 4:
+                return {}
+            x1, y1, x2, y2 = d["box"]
+            if {q[0] for q in pts} <= {x1, x2} and {q[1] for q in pts} <= {y1, y2}:
+                return {}
+            return {"poly": [[round(px / w, 4), round(py / h, 4)] for px, py in pts]}
+        dets = [{"label": d["label"], "conf": round(float(d["conf"]), 3), "src": d.get("src") or "", "kind": kind, "box": box(d), **poly(d),
                  **({"rejected": dropped[_box_key(d)]} if kind == "vehicle" and _box_key(d) in dropped else {})}
                 for kind, group in (("vehicle", res.vehicles), ("other", res.others)) for d in group]
         out = {"shape": [w, h], "counts": st["counts"], "slots": st["slots"], "detections": dets,
