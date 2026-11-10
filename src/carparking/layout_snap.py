@@ -42,6 +42,9 @@ def snap_lattice(frame: np.ndarray, lay: ZoneLayout, cam, ppm: float = 60.0, tol
     """Snap the layout's separators to the painted lines. -> (the layout, possibly moved / re-spaced; a report
     {"snapped": bool, "support": share of the lines found, "matched": n, "du_m", "dstep_m", "reason"})."""
     rep = {"snapped": False, "support": 0.0, "matched": 0, "du_m": 0.0, "dstep_m": 0.0, "reason": ""}
+    if abs(lay.stall_angle - 90.0) > 1.0:  # the column profile reads square separators: leaning ones would smear across columns and snap to the wrong lines
+        rep["reason"] = f"snap works on square bays only (these lean at {lay.stall_angle:.0f} degrees)"
+        return lay, rep
     try:
         bev, (u_lo, v_lo) = birdseye(frame, lay, cam, ppm)
     except ValueError as e:

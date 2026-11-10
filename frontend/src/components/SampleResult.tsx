@@ -92,6 +92,7 @@ export function ResultPanel({ result, label, expected }: { result: SampleResult;
   const stage = useRef<HTMLDivElement>(null);
   const { view, zoomCentre, panBy, fit, transform } = useZoomPan(stage); // the wheel zooms about the pointer, a drag moves the picture
   const [grab, setGrab] = useState(false);
+  const line = Math.max(0.35, 1 / Math.sqrt(view.s)); // outlines get thinner as you zoom in (they are drawn in screen pixels)
   const [w, h] = result.shape;
   const show = (e: React.MouseEvent, title: string, lines: string[]) => {
     const box = stage.current?.getBoundingClientRect();
@@ -121,8 +122,8 @@ export function ResultPanel({ result, label, expected }: { result: SampleResult;
             <EncroachHatch size={Math.max(6, w / 140)} />
             <BlockHatch size={Math.max(8, w / 120)} />
             <path d={outsidePath(result.area, w, h)} fill="rgba(0,0,0,0.45)" fillRule="evenodd" />
-            {result.slots.map((s) => <SlotShape key={s.id} slot={s} w={w} h={h} ghost={false} onHover={(e, t, l) => show(e, t, l)} source={baySource(undefined, s.id)} />)}
-            {result.detections.map((d, i) => <BoxShape key={i} det={d} w={w} h={h} ghost={false} onHover={(e, t, l) => show(e, t, l)} />)}
+            {result.slots.map((s) => <SlotShape key={s.id} slot={s} w={w} h={h} ghost={false} line={line} onHover={(e, t, l) => show(e, t, l)} source={baySource(undefined, s.id)} />)}
+            {result.detections.map((d, i) => <BoxShape key={i} det={d} w={w} h={h} ghost={false} line={line} onHover={(e, t, l) => show(e, t, l)} />)}
           </svg>
          </div>
           {hover && (

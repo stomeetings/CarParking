@@ -135,6 +135,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const stage = useRef<HTMLDivElement>(null); // the zoomed, panned layer holding the picture and its marks (its rect gives shares of the picture)
   const viewport = useRef<HTMLDivElement>(null); // the fixed box the layer is clipped to
   const { view, zoomCentre, panBy, fit, transform } = useZoomPan(viewport, !!session);
+  // bay / outline lines are drawn in screen pixels (non-scaling) and get thinner as you zoom in, so close-up adjustments see the car, not a fat border: 1.5 px at 100 %, ~1 px at 225 %, 0.6 px at 6x and beyond
+  const edgeW = Math.max(0.6, 1.5 / Math.sqrt(view.s));
   const [panTool, setPanTool] = useState(false); // drag moves the picture instead of placing a point (the middle mouse button does it in every mode)
   const [panning, setPanning] = useState<{ x: number; y: number } | null>(null);
   // zones: every zone its own SAM surface and its own GeoCalib (or pins) run and grid on the server; the run merges every zone's bays
@@ -808,7 +810,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                     const colour = zoneColour(z.id);
                     return (
                       <g key={`z${z.id}`} opacity={on ? 1 : 0.5} data-testid="zone-layer" data-zone={z.id} data-active={on ? "1" : "0"}>
-                        {z.outline.length > 1 && <polygon points={points(z.outline, w, h)} fill="none" stroke={colour} strokeWidth={2} strokeDasharray="8 5" vectorEffect="non-scaling-stroke"
+                        {z.outline.length > 1 && <polygon points={points(z.outline, w, h)} fill="none" stroke={colour} strokeWidth={Math.max(1, edgeW)} strokeDasharray="8 5" vectorEffect="non-scaling-stroke"
                                                           pointerEvents="none" data-testid="zone-outline" />}
                         {z.surface && <polygon points={points(z.surface, w, h)} fill={`${colour}22`} stroke={colour} strokeWidth={1} vectorEffect="non-scaling-stroke" pointerEvents="none" data-testid="zone-surface" />}
                         {on && z.outline.map((p, i) => <circle key={`o${i}`} cx={px(p)[0]} cy={px(p)[1]} r={dot * 0.8} fill={colour} pointerEvents="none" />)}
@@ -822,7 +824,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                         {bays.filter((b) => Math.floor(b.id / 100) === z.id).map((b) => (
                           <g key={b.id} data-testid="zone-bay" data-id={b.id}>
                             <polygon points={points(b.poly, w, h)} fill={b.id === sel ? "rgba(79,70,229,0.25)" : `${colour}26`} stroke={b.id === sel ? "#4f46e5" : colour}
-                                     strokeWidth={b.id === sel ? 2.5 : 2} vectorEffect="non-scaling-stroke" style={{ cursor: on ? (mode === "edit" ? "move" : "default") : "pointer" }}
+                                     strokeWidth={b.id === sel ? edgeW + 0.5 : edgeW} vectorEffect="non-scaling-stroke" shapeRendering="geometricPrecision" style={{ cursor: on ? (mode === "edit" ? "move" : "default") : "pointer" }}
                                      onClick={(e) => { if (!on && !panTool) (e.stopPropagation(), setActiveZone(z.id)); }}
                                      onMouseDown={(e) => { if (on && mode === "edit" && !panTool && e.button === 0) (e.stopPropagation(), setSel(b.id), history.push(), setDrag({ kind: "move", id: b.id, last: at(e) })); }} />
                             <text x={b.poly.reduce((m, p) => m + p[0], 0) / b.poly.length * w} y={b.poly.reduce((m, p) => m + p[1], 0) / b.poly.length * h} fontSize={font * 0.8}

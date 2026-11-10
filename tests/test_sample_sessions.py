@@ -543,6 +543,9 @@ def test_a_zone_can_be_laid_again_from_a_master_bay_dots_a_margin_and_a_refit(en
         d = c.post(url, headers=AUTH, json={"mode": "dots", "dots": [{"x": dots[0]["x"], "y": dots[0]["y"], "index": 0}, {"x": dots[1]["x"], "y": dots[1]["y"], "index": 2}], "count": 4})
         assert d.status_code == 200 and len(d.json()["zones"][0]["slots"]) == 4, d.text
         assert c.post(url, headers=AUTH, json={"mode": "dots", "count": 3}).status_code == 422  # no dots
+        tilted = c.post(url, headers=AUTH, json={"mode": "dots", "dots": [{"x": dots[0]["x"], "y": dots[0]["y"], "index": 0}, {"x": dots[1]["x"], "y": dots[1]["y"], "index": 2}], "count": 4, "stall_angle": 60})
+        assert tilted.status_code == 200 and tilted.json()["layout"]["stall_angle"] == 60 and tilted.json()["info"]["stall_source"] == "typed", tilted.text
+        assert c.post(url, headers=AUTH, json={"mode": "dots", "dots": [{"x": 0.4, "y": 0.8}, {"x": 0.5, "y": 0.8}], "count": 3, "stall_angle": 5}).status_code == 422  # outside 20-160
         assert c.post(f"/api/sample-sessions/{sid}/zones/9/layout", headers=AUTH, json={"mode": "refit"}).status_code == 404
 
 

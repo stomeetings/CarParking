@@ -70,9 +70,16 @@ class ZoneLayout:
     count: int = 1  # bays per row
     rows: int = 1
     row_gap: float = 0.0
+    stall_angle: float = 90.0  # degrees between the row direction and the bay separators: 90 = square bays, less = they lean forward along the row (angled / diagonal parking)
     offsets: dict[int, BayOffset] = field(default_factory=dict)  # by bay index (row * count + i)
     ids: list[int] = field(default_factory=list)  # the bay ids / names to hand out, by index (default 1..n, "B<n>")
     names: list[str] = field(default_factory=list)
+
+    @property
+    def lean(self) -> float:
+        """cot(stall_angle): how far a separator moves along the row per metre of depth (0 for square bays). The back corners of every bay shift by depth * lean."""
+        a = float(self.stall_angle)
+        return 0.0 if abs(a - 90.0) < 1e-9 else float(1.0 / np.tan(np.radians(a)))
 
     # ---- frame ----------------------------------------------------------------------------------------------------------------------------
     def axes(self) -> tuple[np.ndarray, np.ndarray]:
@@ -100,7 +107,8 @@ class ZoneLayout:
         """The lattice cell of bay idx in (u, v): front-left, front-right, back-right, back-left."""
         r, i = divmod(idx, max(1, int(self.count)))
         u0, v0 = i * (self.width + self.gap), r * (self.depth + self.row_gap)
-        return np.array([[u0, v0], [u0 + self.width, v0], [u0 + self.width, v0 + self.depth], [u0, v0 + self.depth]])
+        s = self.depth * self.lean  # a shear on the ground about the row's front line: the front edge and the step stay, the separators lean
+        return np.array([[u0, v0], [u0 + self.width, v0], [u0 + self.width + s, v0 + self.depth], [u0 + s, v0 + self.depth]])
 
     def bay_uv(self, idx: int) -> np.ndarray:
         """Bay idx as it stands: its lattice cell with its offsets applied (in (u, v))."""
@@ -167,13 +175,14 @@ class ZoneLayout:
     def to_dict(self) -> dict:
         return {"origin": [round(float(x), 4) for x in self.origin], "heading": round(float(self.heading), 4), "flip": bool(self.flip), "width": round(self.width, 4),
                 "depth": round(self.depth, 4), "gap": round(self.gap, 4), "count": int(self.count), "rows": int(self.rows), "row_gap": round(self.row_gap, 4),
+                "stall_angle": round(float(self.stall_angle), 3),
                 "offsets": {str(i): o.to_dict() for i, o in sorted(self.offsets.items()) if not o.is_zero()}, "ids": list(self.ids), "names": list(self.names)}
 
     @classmethod
     def from_dict(cls, d: dict) -> "ZoneLayout":
         try:
             return cls(origin=tuple(map(float, d["origin"])), heading=float(d["heading"]), flip=bool(d.get("flip", False)), width=float(d["width"]), depth=float(d["depth"]),
-                       gap=float(d.get("gap", 0.0)), count=int(d["count"]), rows=int(d.get("rows", 1)), row_gap=float(d.get("row_gap", 0.0)),
+                       gap=float(d.get("gap", 0.0)), count=int(d["count"]), rows=int(d.get("rows", 1)), row_gap=float(d.get("row_gap", 0.0)), stall_angle=float(d.get("stall_angle", 90.0)),
                        offsets={int(i): BayOffset.from_dict(o) for i, o in (d.get("offsets") or {}).items()}, ids=[int(x) for x in d.get("ids", [])],
                        names=list(d.get("names", [])))
         except (KeyError, TypeError, ValueError) as e:
@@ -229,6 +238,31 @@ def layout_from_row(cam, front_px, back_px, count: int, rows: int = 1, depth: fl
                       depth=float(depth if depth else max(abs(across), 2.0)), gap=gap, count=int(count), rows=int(rows), row_gap=row_gap)
 
 
+MIN_STALL_DEG, MAX_STALL_DEG = 20.0, 160.0
+LEAN_TOL = float(np.tan(np.radians(1.0)))  # under 1 degree off square is square
+
+
+def lean_of(quad_uv: np.ndarray) -> float | None:
+    """cot of the stall angle of one bay (4 x (u, v), front-left first, front edge along u): how far its separators lean along the row per metre of depth. None when the
+    corners are not in that order (the front edge is not along the row) or the bay is shallower than 0.3 m."""
+    q = np.asarray(quad_uv, float)
+    front = (q[1] - q[0] + q[2] - q[3]) / 2
+    side = (q[3] - q[0] + q[2] - q[1]) / 2
+    if front[0] <= 0.3 or abs(front[1]) > 0.2 * abs(front[0]) or side[1] < 0.3:
+        return None
+    return float(side[0] / side[1])
+
+
+def _median_lean(uvs: list[np.ndarray]) -> float | None:
+    """The row's lean (median over its bays), or None when it is square (within a degree), unreliable (under half the bays give one) or outside 20-160 degrees."""
+    ls = [x for x in (lean_of(q) for q in uvs) if x is not None]
+    if len(ls) < max(1, len(uvs) // 2):
+        return None
+    m = float(np.median(ls))
+    lim = float(1.0 / np.tan(np.radians(MIN_STALL_DEG)))
+    return m if LEAN_TOL < abs(m) <= lim else None
+
+
 def refit(slots: list[dict], cam, w: int, h: int, count: int | None = None) -> ZoneLayout:
     """The bays as they stand on the picture (edits included) -> a layout, through `cam` (a NEW camera after a recalibration): the lattice (direction, width,
     depth, gap, rows) is the median of the bays, each bay's difference from it is its offset, so nothing the user placed moves."""
@@ -253,10 +287,20 @@ def refit(slots: list[dict], cam, w: int, h: int, count: int | None = None) -> Z
     o = np.array([(pts @ d).min(), (pts @ nrm).min()])
     lay.origin = (float(d[0] * o[0] + nrm[0] * o[1]), float(d[1] * o[0] + nrm[1] * o[1]))
     uv = [lay.to_uv(g) for g in quads]
-    u0 = np.array([q[:, 0].min() for q in uv])
+    lean = _median_lean(uv)
+    if lean is not None:  # angled bays: the separators lean on the ground; measure each bay from its front edge, keep the angle as the layout's (not as per-bay offsets)
+        lay.stall_angle = float(np.degrees(np.arctan2(1.0, lean)))
+        shift = float(min(q[0, 0] for q in uv))
+        lay.origin = (lay.origin[0] + d[0] * shift, lay.origin[1] + d[1] * shift)
+        uv = [lay.to_uv(g) for g in quads]
+        u0 = np.array([q[0, 0] for q in uv])
+        wd = np.array([(q[1, 0] - q[0, 0] + q[2, 0] - q[3, 0]) / 2 for q in uv])
+        dp = np.array([(q[3, 1] - q[0, 1] + q[2, 1] - q[1, 1]) / 2 for q in uv])
+    else:
+        u0 = np.array([q[:, 0].min() for q in uv])
+        wd = np.array([q[:, 0].max() - q[:, 0].min() for q in uv])
+        dp = np.array([q[:, 1].max() - q[:, 1].min() for q in uv])
     v0 = np.array([q[:, 1].min() for q in uv])
-    wd = np.array([q[:, 0].max() - q[:, 0].min() for q in uv])
-    dp = np.array([q[:, 1].max() - q[:, 1].min() for q in uv])
     lay.width, lay.depth = float(np.median(wd)), float(np.median(dp))
     # rows: bays whose v0 differ by more than half a depth are another row
     order_v = np.argsort(v0)
@@ -278,7 +322,7 @@ def refit(slots: list[dict], cam, w: int, h: int, count: int | None = None) -> Z
     # bays go to their lattice index: by row, then by position along the row (a missing bay leaves a hole: its cell stays empty, not shifted)
     ids, names, off, placed = {}, {}, {}, {}
     step = max(lay.width + lay.gap, 1e-6)
-    u1 = np.array([q[:, 0].max() for q in uv])
+    u1 = u0 + wd  # (a bay's front-edge end along the row)
     for k, p in enumerate(per_row):
         i, prev_end = int(np.clip(round(u0[p[0]] / step), 0, lay.count - 1)), None
         for j in p:

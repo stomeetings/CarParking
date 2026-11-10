@@ -307,3 +307,113 @@ def test_one_dot_runs_toward_the_zones_far_end_whichever_way_its_long_edge_is_li
     for ring in (out, out[::-1]):  # the same zone listed in either direction
         lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, t, 0))], 6, W, H, width=2.5, heading=0.0, outline_px=ring)
         assert lay.bays_ground()[0][0][0] == pytest.approx(t.origin[0], abs=0.1) and same_row(lay, t) and info["warnings"] == []
+
+
+# ---- angled (diagonal) bays: a shear on the ground, read from a front / back dot pair on one separator -------------------------------------------------
+def dot_on(c, lay, k, v=0.0):
+    """Pixel (fractions) of separator k of a (possibly angled) lattice at across-distance v: it leans by v * cot(angle) along the row."""
+    return tuple((to_image(c, lay.to_ground([[k * (lay.width + lay.gap) + v * lay.lean, v]]))[0] / (W, H)).tolist())
+
+
+def slanted(angle=60.0, count=6, **kw):
+    return truth(count, stall_angle=angle, **kw)
+
+
+@pytest.mark.parametrize("angle", [45.0, 60.0, 75.0, 110.0])
+def test_a_front_and_back_dot_on_one_line_tilt_the_whole_row_like_the_cars(angle):
+    c, t = cam(), slanted(angle)
+    dots = [X.Dot(dot_on(c, t, 0), 0), X.Dot(dot_on(c, t, 0, 5.0), 0, "back"), X.Dot(dot_on(c, t, 3), 3)]
+    lay, info = X.layout_from_dots(c, dots, 6, W, H)
+    assert lay.stall_angle == pytest.approx(angle, abs=1.0) and info["stall_source"] == "dots" and info["warnings"] == []
+    assert lay.width == pytest.approx(2.5, abs=0.05) and same_row(lay, t)  # every bay leans the same, no bay edited by hand
+    assert not lay.offsets
+
+
+def test_the_angle_is_found_without_typed_line_numbers_and_with_an_outline():
+    c, t = cam(), slanted(60.0)
+    out = zone_outline(c, t)
+    dots = [X.Dot(dot_on(c, t, 0)), X.Dot(dot_on(c, t, 0, 5.0), None, "back"), X.Dot(dot_on(c, t, 1))]
+    lay, info = X.layout_from_dots(c, dots, 6, W, H, width=2.5, outline_px=out)
+    assert lay.stall_angle == pytest.approx(60.0, abs=1.0) and same_row(lay, t)
+
+
+def test_square_bays_stay_square_a_pair_on_a_square_row_and_no_pair_at_all():
+    c, t = cam(), truth(6)
+    lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, t, 0), 0), X.Dot(dot_at(c, t, 0, 5.0), 0, "back"), X.Dot(dot_at(c, t, 3), 3)], 6, W, H)
+    assert lay.stall_angle == pytest.approx(90.0, abs=0.5) and same_row(lay, t)
+    lay2, info2 = X.layout_from_dots(c, [X.Dot(dot_at(c, t, 0), 0), X.Dot(dot_at(c, t, 3), 3)], 6, W, H)
+    assert lay2.stall_angle == 90.0 and info2["stall_source"] == "none" and same_row(lay2, t)  # nothing asked for: exactly today's bays
+
+
+def test_a_typed_angle_wins_and_an_absurd_one_is_refused():
+    c, t = cam(), slanted(60.0)
+    dots = [X.Dot(dot_on(c, t, 0), 0), X.Dot(dot_on(c, t, 3), 3)]
+    lay, info = X.layout_from_dots(c, dots, 6, W, H, stall_angle=60.0)
+    assert info["stall_source"] == "typed" and lay.stall_angle == pytest.approx(60.0) and same_row(lay, t)
+    with pytest.raises(L.LayoutError):
+        X.layout_from_dots(c, dots, 6, W, H, stall_angle=10.0)
+
+
+def test_the_back_dot_decides_which_side_the_bays_are_on():
+    c, t = cam(), slanted(60.0, flip=True)  # the bays run to the other side of the row
+    dots = [X.Dot(dot_on(c, t, 0), 0), X.Dot(dot_on(c, t, 0, 5.0), 0, "back"), X.Dot(dot_on(c, t, 3), 3)]
+    lay, _ = X.layout_from_dots(c, dots, 6, W, H)
+    assert lay.stall_angle == pytest.approx(60.0, abs=1.0) and same_row(lay, t)
+
+
+def test_pairs_that_disagree_are_reported():
+    c = cam()
+    t60, t75 = slanted(60.0), slanted(75.0)
+    dots = [X.Dot(dot_on(c, t60, 0), 0), X.Dot(dot_on(c, t60, 0, 5.0), 0, "back"), X.Dot(dot_on(c, t75, 3), 3), X.Dot(dot_on(c, t75, 3, 5.0), 3, "back")]
+    _, info = X.layout_from_dots(c, dots, 6, W, H)
+    assert any("disagree" in w for w in info["warnings"])
+
+
+def test_a_refit_keeps_the_angle_as_the_layouts_not_as_per_bay_offsets():
+    c, t = cam(), slanted(60.0)
+    fit = L.refit(t.to_slots(c, W, H), c, W, H)
+    assert fit.stall_angle == pytest.approx(60.0, abs=1.0) and not fit.offsets and fit.count == 6
+    assert all(np.allclose(a, b, atol=0.1) for a, b in zip(fit.bays_ground(), t.bays_ground()))
+    sq = L.refit(truth(6).to_slots(c, W, H), c, W, H)
+    assert sq.stall_angle == 90.0  # square rows are not turned into slanted ones
+
+
+def test_a_master_bay_that_is_a_parallelogram_clones_its_slant():
+    c, t = cam(), slanted(60.0)
+    master = (to_image(c, t.bays_ground()[2]) / (W, H)).tolist()
+    lay, info = X.clone_master(c, master, 6, W, H, master_index=2)
+    assert info["stall_angle_deg"] == pytest.approx(60.0, abs=1.0) and info["squareness_m"] < 0.05 and same_row(lay, t)
+
+
+def test_the_inward_margin_works_on_slanted_bays_and_they_never_touch():
+    c, t = cam(), slanted(60.0)
+    slots, kept = X.inset_slots(t, c, W, H, 0.15)
+    assert len(slots) == 6 and kept == []
+    full = [np.abs(np.cross(q[1] - q[0], q[3] - q[0])) for q in t.bays_ground()]
+    inner = [np.abs(np.cross(np.array(s["poly"])[1] - np.array(s["poly"])[0], np.array(s["poly"])[3] - np.array(s["poly"])[0])) for s in slots]
+    assert len(full) == len(inner)
+
+
+def test_the_angle_is_saved_and_an_old_layout_without_it_is_square():
+    t = slanted(60.0)
+    assert L.ZoneLayout.from_dict(t.to_dict()).stall_angle == pytest.approx(60.0)
+    d = truth(6).to_dict()
+    d.pop("stall_angle")
+    assert L.ZoneLayout.from_dict(d).stall_angle == 90.0
+
+
+@pytest.mark.parametrize("pitch,f,height", [(25.0, 900.0, 6.0), (35.0, 1200.0, 9.0), (50.0, 1100.0, 12.0), (30.0, 800.0, 5.0)])
+def test_the_slant_is_perspective_correct_for_any_camera(pitch, f, height):
+    c, t = cam(pitch=pitch, f=f, height=height), slanted(55.0)
+    dots = [X.Dot(dot_on(c, t, 0), 0), X.Dot(dot_on(c, t, 0, 5.0), 0, "back"), X.Dot(dot_on(c, t, 3), 3)]
+    lay, info = X.layout_from_dots(c, dots, 6, W, H)
+    assert lay.stall_angle == pytest.approx(55.0, abs=1.5) and same_row(lay, t, tol=0.2)
+    slots = lay.to_slots(c, W, H)  # the picture: every bay's side edges lean the same on the ground, so far bays are not drawn at a different angle than they are
+    back = L.refit(slots, c, W, H)
+    assert back.stall_angle == pytest.approx(55.0, abs=1.5)
+
+
+def test_snap_leaves_slanted_bays_alone_and_says_why():
+    c, t = cam(), slanted(60.0)
+    lay, rep = snap_lattice(np.zeros((H, W, 3), np.uint8), t, c)
+    assert lay is t and rep["snapped"] is False and "square bays only" in rep["reason"]

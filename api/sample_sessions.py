@@ -126,6 +126,7 @@ class LayoutIn(BaseModel):
     row_gap: float = Field(0.0, ge=0.0, le=10.0)
     dot_at: str = Field("front", pattern="^(front|mid|back)$")
     heading: float | None = Field(None, ge=-360, le=360)
+    stall_angle: float | None = Field(None, ge=20, le=160)  # dots mode: the bays' angle to the row in degrees (90 = square); empty = from a front / back dot pair on one separator
     fit_zone: bool = False  # dots mode: the bay width is the zone's length over the count exactly (the dots then give only direction and alignment)
     snap: bool = False  # snap the separators to the painted lines (setup only)
     margin_m: float = Field(0.0, ge=0.0, le=0.5)  # pull every bay in by this many metres on the ground
@@ -540,7 +541,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                     raise HTTPException(422, "dots: place at least one reference dot")
                 dots = [lx.Dot((float(d["x"]), float(d["y"])), None if d.get("index") is None else int(d["index"]), d.get("at")) for d in body.dots]
                 lay, info = lx.layout_from_dots(cam, dots, body.count, w, h, body.width, body.depth, body.gap, body.rows, body.row_gap, body.dot_at, body.heading,
-                                                outline_px=z["outline"], fit_zone=body.fit_zone)  # (the zone polygon is the row's extent; the dots only guide)
+                                                outline_px=z["outline"], fit_zone=body.fit_zone, stall_angle=body.stall_angle)  # (the zone polygon is the row's extent; the dots only guide)
             elif body.mode == "master":
                 if body.master is None:
                     raise HTTPException(422, "master: draw the master bay (4 corners)")

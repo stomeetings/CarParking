@@ -17,6 +17,7 @@ export interface LayoutRequest {
   dot_at: "front" | "mid" | "back";
   snap: boolean;
   fit_zone?: boolean;
+  stall_angle?: number; // degrees between the row and the bay separators (90 = square); empty = from a front / back dot pair on one line
   margin_m: number;
   width?: number;
   heading?: number;
@@ -59,6 +60,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
   const [rows, setRows] = useState("1");
   const [dotAt, setDotAt] = useState<"front" | "mid" | "back">("front");
   const [heading, setHeading] = useState("");
+  const [angle, setAngle] = useState("");
   const [masterIndex, setMasterIndex] = useState("0");
   const [snap, setSnap] = useState(false);
   const [fitZone, setFitZone] = useState(false);
@@ -71,6 +73,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
     count: Math.min(99, Math.max(1, Math.round(num(count, Number(expected) >= 1 ? Number(expected) : Math.max(1, bays))))),
     depth: num(depth, 5), gap: num(gap, 0), rows: Math.min(6, Math.max(1, Math.round(num(rows, 1)))), dot_at: dotAt, snap, margin_m: margin, ...(fitZone ? { fit_zone: true } : {}),
     ...(width.trim() !== "" ? { width: num(width, 2.5) } : {}), ...(heading.trim() !== "" ? { heading: num(heading, 0) } : {}),
+    ...(angle.trim() !== "" ? { stall_angle: Math.min(160, Math.max(20, num(angle, 90))) } : {}),
   });
   const send = (req: LayoutRequest) => { last.current = req; onApply(req); };
   const fromDots = () => send({ ...base(), mode: "dots", dots: dots.map((d) => ({ x: d.p[0], y: d.p[1], ...(d.index.trim() !== "" ? { index: Math.max(0, Math.round(Number(d.index))) } : {}), ...(d.at ? { at: d.at } : {}) })) });
@@ -106,6 +109,9 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
         </label>
         <label className="block text-xs text-muted">Rows
           <input className={field} inputMode="numeric" value={rows} data-testid="lay-rows" onChange={(e) => setRows(e.target.value.replace(/[^0-9]/g, "").slice(0, 1))} />
+        </label>
+        <label className="block text-xs text-muted" title="Angle between the row and the bay lines, 20-160 (90 = square). Empty = taken from two dots on one separator line, one at its front and one at its back, so the bays lean like the cars">Bay angle (°)
+          <input className={field} inputMode="decimal" placeholder="auto" value={angle} data-testid="lay-angle" onChange={(e) => setAngle(e.target.value.replace(/[^0-9.]/g, "").slice(0, 5))} />
         </label>
       </div>
 
@@ -152,6 +158,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
             ))}
           </ul>
         )}
+        <p className="text-xs text-muted" data-testid="lay-angle-hint">Cars parked at an angle? Put two dots on ONE painted line, one at its front (near end) and one at its back (far end), one after the other, and set the second one's place to "back": the bays then lean at the cars' angle, in perspective. Or type the angle above.</p>
         <p className="text-xs text-muted">Dot 1 (the first dot along the row, or line 0 when you type line numbers) is where the first bay starts: nothing is drawn before it. The dots give the direction and spacing; the bays then run to the far end of the zone outline.</p>
         <label className="flex items-center gap-1.5 text-xs text-muted" title="Make every bay exactly the distance from Dot 1 to the zone's far end divided by the number of bays">
           <input type="checkbox" checked={fitZone} data-testid="lay-fit-zone" onChange={(e) => setFitZone(e.target.checked)} /> Stretch the bays from Dot 1 to the zone's far end

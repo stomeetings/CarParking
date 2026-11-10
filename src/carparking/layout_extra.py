@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from carparking.geometry.camera import to_ground, to_image
-from carparking.layout import CORNERS, LayoutError, ZoneLayout
+from carparking.layout import CORNERS, MAX_STALL_DEG, MIN_STALL_DEG, LayoutError, ZoneLayout, lean_of
 
 
 @dataclass
@@ -36,9 +36,24 @@ def _long_edge(og: np.ndarray) -> np.ndarray:
     return e / (np.linalg.norm(e) or 1.0)
 
 
+def _pairs(dots: list[Dot], dot_at: str) -> list[tuple[int, int]]:
+    """Dots clicked one after the other that mark the SAME separator line at different places (one front, one back / middle): the slant of the cars' stalls.
+    Two typed line numbers must be equal; a dot with no line number is taken to be on its neighbour's line."""
+    out, used = [], set()
+    for i in range(len(dots) - 1):
+        a, b = dots[i], dots[i + 1]
+        if i in used or (a.at or dot_at) == (b.at or dot_at):
+            continue
+        if a.index is not None and b.index is not None and a.index != b.index:
+            continue
+        out.append((i, i + 1))
+        used.add(i + 1)  # a dot belongs to one pair at most (a back dot is not also paired with the next line's front dot)
+    return out
+
+
 def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: float | None = None, depth: float = 5.0, gap: float = 0.0, rows: int = 1,
                      row_gap: float = 0.0, dot_at: str = "front", heading: float | None = None, flip: bool = False, outline_px=None,
-                     fit_zone: bool = False) -> tuple[ZoneLayout, dict]:
+                     fit_zone: bool = False, stall_angle: float | None = None) -> tuple[ZoneLayout, dict]:
     """A layout from reference dots. The dots are a GUIDE (spacing, scale, alignment), never the row's limits: the zone polygon (`outline_px`, fractions) is the
     row's extent and the N bays are laid across all of it.
       * direction : the line through the dots when they span a few bays; else the zone's long side (dots in one slot cannot give a direction)
@@ -47,12 +62,18 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
       * start     : the row STARTS AT THE DOTS: untyped, Dot 1 (the first dot along the row) is line 0, the first bay's start edge, and nothing is drawn before it;
                     typed line numbers put line 0 where they say. The zone polygon only gives the far end
       * count     : N bays of the step from the start. `fit_zone` (and dots closer than a bay) make the step (zone's far end - start) / N, so N bays span from Dot 1 to the end
-    Without an outline the old behaviour stands (the extent is the dots'). dot_at: where on its separator the dot is: front (v = 0), mid (depth / 2), back (depth).
-    -> (layout, {"step", "residual_m", "dropped", "indices", "extent_m", "covers_m", "guide_only", "warnings"})"""
+      * slant     : angled / diagonal bays. Two dots on ONE separator line, one at its front and one at its back (or middle), give the stall angle: their ground vector,
+                    read in the row frame, is cot(angle) = along / across. It is a shear on the ground (the front edge, the step and the depth stay), so the perspective
+                    of the lean is right near and far. `stall_angle` (degrees, 20-160, 90 = square) overrides it; with neither, the bays are square (as before). The
+                    side the back dot lies on also sets which way is back. Dots at the back are brought to the front line (u - v * cot) before the step is read
+    Without an outline the old behaviour stands (the extent is the dots). dot_at: where on its separator the dot is: front (v = 0), mid (depth / 2), back (depth).
+    -> (layout, {"step", "residual_m", "dropped", "indices", "extent_m", "covers_m", "guide_only", "stall_angle_deg", "stall_source", "warnings"})"""
     if not dots or count < 1:
         raise LayoutError("place at least one reference dot and give the expected count")
     if dot_at not in ("front", "mid", "back"):
         raise LayoutError("dot_at is front, mid or back")
+    if stall_angle is not None and not MIN_STALL_DEG <= float(stall_angle) <= MAX_STALL_DEG:
+        raise LayoutError(f"the bay angle is {MIN_STALL_DEG:.0f} to {MAX_STALL_DEG:.0f} degrees (90 = square)")
     for dd in dots:
         if dd.at not in (None, "front", "mid", "back"):
             raise LayoutError("a dot's place is front, mid or back")
@@ -63,16 +84,50 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
     d_out = _long_edge(ext) if ext is not None else None
     nominal = float(np.ptp(ext @ d_out)) / int(count) if ext is not None else None
     warnings: list[str] = []
+    vs = np.array([{"front": 0.0, "mid": depth / 2, "back": depth}[dd.at or dot_at] for dd in dots])
+    pairs = _pairs(dots, dot_at)
+    typed_cot = None
+    if stall_angle is not None:
+        typed_cot = 0.0 if abs(float(stall_angle) - 90.0) < 1e-9 else float(1.0 / np.tan(np.radians(float(stall_angle))))
+
+    def depth_sign(dv):
+        """+1 when the row normal (dv turned +90 deg) points from the front dot of a pair toward its back dot, -1 the other way, None without a pair."""
+        if not pairs:
+            return None
+        p = np.array([-dv[1], dv[0]])
+        m = float(np.median([(g[j] - g[i]) @ p * np.sign(vs[j] - vs[i]) for i, j in pairs]))
+        return 1.0 if m >= 0 else -1.0
+
+    def lean_pairs(dv, sg) -> list[float]:
+        """cot of the stall angle from each front / back pair: (their ground vector along the row) / (across it), in the frame (dv, sg * dv turned 90 deg)."""
+        n_ = sg * np.array([-dv[1], dv[0]])
+        out_ = []
+        for i, j in pairs:
+            sv = g[j] - g[i]
+            across, along = float(sv @ n_), float(sv @ dv)
+            if abs(across) >= 0.5 * abs(vs[j] - vs[i]) > 0.0:  # the measured across-distance must roughly match the places, else the two dots are not on one line
+                out_.append(along / across)
+        return out_
+
+    def current_cot(dv, sg) -> float:
+        if typed_cot is not None:
+            return typed_cot
+        ls = lean_pairs(dv, sg)
+        return float(np.median(ls)) if ls else 0.0
+
     d_dots = None
     span = 0.0
     if len(g) >= 2:
-        vs = np.array([{"front": 0.0, "mid": depth / 2, "back": depth}[dd.at or dot_at] for dd in dots])
         gc = g
         d_dots = np.linalg.svd(g - g.mean(axis=0))[2][0]
-        for _ in range(3 if np.ptp(vs) > 1e-9 else 0):  # dots at different places on their lines: bring each to the front line before reading the row's direction
-            nn = np.array([-d_dots[1], d_dots[0]]) * (-1.0 if flip else 1.0)
-            gc = g - np.outer(vs, nn)
-            d_dots = np.linalg.svd(gc - gc.mean(axis=0))[2][0]
+        for _ in range(12 if np.ptp(vs) > 1e-9 else 0):  # dots at different places on their lines: bring each to the front line (across and along the lean) before the direction
+            sg = depth_sign(d_dots)  # (a fixed-point loop: direction -> lean -> corrected dots -> direction; it settles in a few passes, 12 is a ceiling)
+            sg = sg if sg is not None else (-1.0 if flip else 1.0)
+            nn = np.array([-d_dots[1], d_dots[0]]) * sg
+            gc = g - np.outer(vs, nn) - np.outer(vs * current_cot(d_dots, sg), d_dots)
+            prev, d_dots = d_dots, np.linalg.svd(gc - gc.mean(axis=0))[2][0]
+            if abs(float(prev @ d_dots)) > 1.0 - 1e-10:
+                break
         if d_dots @ (gc[-1] - gc[0]) < 0:
             d_dots = -d_dots
         span = float(np.ptp(g @ d_dots))
@@ -91,7 +146,24 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
     else:
         raise LayoutError("one dot needs the bay width and the row's heading (or an outline to take the direction from)")
     heading_deg = float(np.degrees(np.arctan2(d[1], d[0])))
-    u = g @ d
+    sg = depth_sign(d)
+    if sg is not None:  # the back dot says which side the bays are on
+        flip = sg < 0
+    else:
+        sg = -1.0 if flip else 1.0
+    cot, stall_source = 0.0, "none"
+    if typed_cot is not None:
+        cot, stall_source = typed_cot, "typed"
+    elif pairs:
+        ls = lean_pairs(d, sg)
+        if ls:
+            lim = float(1.0 / np.tan(np.radians(MIN_STALL_DEG)))
+            cot, stall_source = float(np.clip(np.median(ls), -lim, lim)), "dots"
+            degs = [float(np.degrees(np.arctan2(1.0, x))) for x in ls]
+            if max(degs) - min(degs) > 5.0:
+                warnings.append(f"the front / back dot pairs disagree on the bay angle ({min(degs):.0f} to {max(degs):.0f} degrees): the median is used; check that each pair is on one separator")
+    stall_deg = float(np.degrees(np.arctan2(1.0, cot)))
+    u = g @ d - vs * cot  # each dot brought to the front line along the lean (square bays: cot = 0, u = g . d as before)
     typed = any(dd.index is not None for dd in dots)  # one typed line number anchors the lattice; the untyped dots are numbered from it
     ref = width or nominal
     for dd in dots:
@@ -170,9 +242,10 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
             warnings.append(f"{int(count)} bays of {step:.2f} m cover {covers:.1f} m = {pct:.0f} % of the {avail:.1f} m from the first dot to the zone's end: they {what}. "
                             f"Check the expected count or the dots' line numbers, or tick 'Stretch the bays to fit the zone exactly'")
     o = d * u_first + n * base_v
-    lay = ZoneLayout(origin=(float(o[0]), float(o[1])), heading=heading_deg, flip=flip, width=step - gap, depth=depth, gap=gap, count=int(count), rows=int(rows), row_gap=row_gap)
+    lay = ZoneLayout(origin=(float(o[0]), float(o[1])), heading=heading_deg, flip=flip, width=step - gap, depth=depth, gap=gap, count=int(count), rows=int(rows), row_gap=row_gap,
+                     stall_angle=stall_deg)
     return lay, {"step": round(step, 4), "residual_m": round(resid, 4), "dropped": dropped, "indices": ks, "extent_m": None if extent is None else round(extent, 3), "available_m": None if avail is None else round(avail, 3),
-                 "covers_m": round(covers, 3), "coverage_pct": None if pct is None else round(pct, 1), "guide_only": guide_only, "warnings": warnings}
+                 "covers_m": round(covers, 3), "coverage_pct": None if pct is None else round(pct, 1), "guide_only": guide_only, "stall_angle_deg": round(stall_deg, 2), "stall_source": stall_source, "warnings": warnings}
 
 
 def clone_master(cam, master_px, count: int, w: int, h: int, master_index: int = 0, rows: int = 1, gap: float = 0.0, row_gap: float = 0.0) -> tuple[ZoneLayout, dict]:
@@ -191,16 +264,30 @@ def clone_master(cam, master_px, count: int, w: int, h: int, master_index: int =
     if flip:
         nrm = -nrm
     u, v = g @ d, g @ nrm
-    width, depth = float(u.max() - u.min()), float(v.max() - v.min())
+    quad = np.c_[u, v]
+    lean = lean_of(quad)  # an angled master (a parallelogram, front edge on the row): its separators' lean is the row's stall angle
+    lim = float(1.0 / np.tan(np.radians(MIN_STALL_DEG)))
+    if lean is not None and 0.0175 < abs(lean) <= lim:
+        width = float((quad[1, 0] - quad[0, 0] + quad[2, 0] - quad[3, 0]) / 2)  # the front edge: the step along the row
+        depth = float((quad[3, 1] - quad[0, 1] + quad[2, 1] - quad[1, 1]) / 2)
+        u0, v0 = float(quad[0, 0]), float((quad[0, 1] + quad[1, 1]) / 2)
+        stall = float(np.degrees(np.arctan2(1.0, lean)))
+        ideal = np.array([[u0, v0], [u0 + width, v0], [u0 + width + depth * lean, v0 + depth], [u0 + depth * lean, v0 + depth]])
+    else:
+        lean, stall = 0.0, 90.0
+        width, depth = float(u.max() - u.min()), float(v.max() - v.min())
+        u0, v0 = float(u.min()), float(v.min())
+        ideal = np.array([[u0, v0], [u0 + width, v0], [u0 + width, v0 + depth], [u0, v0 + depth]])
     if width < 0.3 or depth < 0.3:
         raise LayoutError("the master bay is smaller than 0.3 m on the ground")
-    ideal = np.array([[u.min(), v.min()], [u.max(), v.min()], [u.max(), v.max()], [u.min(), v.max()]])
-    err = float(np.abs(np.c_[u, v] - ideal).max())  # how far the drawn corners are from the ideal rectangle (m)
-    lay = ZoneLayout(heading=float(np.degrees(np.arctan2(d[1], d[0]))), flip=flip, width=width, depth=depth, gap=gap, count=int(count), rows=int(rows), row_gap=row_gap)
+    err = float(np.abs(quad - ideal).max())  # how far the drawn corners are from the ideal rectangle / parallelogram (m)
+    lay = ZoneLayout(heading=float(np.degrees(np.arctan2(d[1], d[0]))), flip=flip, width=width, depth=depth, gap=gap, count=int(count), rows=int(rows), row_gap=row_gap,
+                     stall_angle=stall)
     dd, nn = lay.axes()
-    o = dd * (u.min() - master_index * (width + gap)) + nn * v.min()
+    o = dd * (u0 - master_index * (width + gap)) + nn * v0
     lay.origin = (float(o[0]), float(o[1]))
-    return lay, {"width_m": round(width, 3), "depth_m": round(depth, 3), "squareness_m": round(err, 3)}
+    return lay, {"width_m": round(width, 3), "depth_m": round(depth, 3), "squareness_m": round(err, 3), "stall_angle_deg": round(stall, 2),
+                 "stall_source": "master" if stall != 90.0 else "none"}
 
 
 def inset_quad(quad: np.ndarray, margin: float) -> np.ndarray | None:

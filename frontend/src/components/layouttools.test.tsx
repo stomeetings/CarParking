@@ -21,3 +21,23 @@ describe("the layout panel's sections", () => {
     expect(screen.getByTestId("lay-dot-mode")).toBeTruthy();
   });
 });
+
+describe("the bay angle", () => {
+  const ask = (onApply: (r: unknown) => void) => render(<LayoutTools zoneName="Zone A" next={{ index: "", at: "" }} onNext={vi.fn()} bays={0} expected="" master={null} dots={[{ p: [0.2, 0.7], index: "", at: "" }]}
+                                                          placing={false} busy={false} answer={null} onPlace={vi.fn()} onDotIndex={vi.fn()} onDotAt={vi.fn()} onDotRemove={vi.fn()} onDotsClear={vi.fn()} onApply={onApply} />);
+
+  it("is left out of the request when empty (auto from the dot pair) and sent, held to 20-160, when typed", () => {
+    const sent: Record<string, unknown>[] = [];
+    ask((r) => sent.push(r as Record<string, unknown>));
+    expect(screen.getByTestId("lay-angle-hint").textContent).toContain("front");
+    fireEvent.change(screen.getByTestId("lay-width"), { target: { value: "2.5" } });
+    fireEvent.click(screen.getByTestId("lay-fit-dots"));
+    expect("stall_angle" in sent[0]).toBe(false);
+    fireEvent.change(screen.getByTestId("lay-angle"), { target: { value: "60" } });
+    fireEvent.click(screen.getByTestId("lay-fit-dots"));
+    expect(sent[1].stall_angle).toBe(60);
+    fireEvent.change(screen.getByTestId("lay-angle"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("lay-fit-dots"));
+    expect(sent[2].stall_angle).toBe(20);
+  });
+});

@@ -228,7 +228,8 @@ const SOURCE_NOTE: Record<BaySource, string> = {
   sub: "sub-bay: a second vehicle in a slot another one holds, gone when it leaves",
 };
 
-export function SlotShape({ slot, w, h, ghost, faded = false, onHover, source = null }: {
+export function SlotShape({ slot, w, h, ghost, faded = false, onHover, source = null, line = 1 }: {
+  line?: number; // multiplies the outline width (a zoomed picture draws thinner lines)
   source?: BaySource | null; // the auto grid's: extrapolated bays are dotted, pinned ones carry a P
   slot: Slot;
   w: number;
@@ -248,7 +249,7 @@ export function SlotShape({ slot, w, h, ghost, faded = false, onHover, source = 
        opacity={faded ? 0.18 : 1} data-testid="overlay-slot" data-state={slot.state} data-avail={slot.avail ?? undefined} data-faded={faded ? "1" : "0"}
        data-source={source ?? undefined}>
       <polygon points={points(slot.poly, w, h)} fill={ghost || faded ? "transparent" : blocked ? `url(#${BLOCK_HATCH})` : encroached ? `url(#${ENCROACH_HATCH})` : c.fill} stroke={ghost ? "transparent" : c.stroke}
-               strokeWidth={2} vectorEffect="non-scaling-stroke"
+               strokeWidth={2 * line} vectorEffect="non-scaling-stroke"
                strokeDasharray={slot.hidden || slot.blocked || slot.duplicate_of != null ? "7 4" : source === "extrapolated" ? "2 4" : source === "dynamic" || source === "sub" ? "8 3 2 3" : undefined} />
       {!ghost && !faded && (
         <g transform={`translate(${lx * w + w / 300}, ${ly * h + w / 300})`}>
@@ -260,7 +261,8 @@ export function SlotShape({ slot, w, h, ghost, faded = false, onHover, source = 
   );
 }
 
-export function BoxShape({ det, w, h, ghost, onHover }: {
+export function BoxShape({ det, w, h, ghost, onHover, line = 1 }: {
+  line?: number; // multiplies the outline width (a zoomed picture draws thinner lines)
   det: Detection;
   w: number;
   h: number;
@@ -275,7 +277,7 @@ export function BoxShape({ det, w, h, ghost, onHover }: {
   if (det.poly && det.poly.length === 4 && !dropped) {  // an oriented box (YOLO-OBB): its tilted outline, the same yellow
     const pts = det.poly.map(([x, y]) => `${x * w},${y * h}`).join(" ");
     return (
-      <polygon data-testid="overlay-obb" points={pts} fill="transparent" stroke={ghost ? "transparent" : color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" className="cursor-help"
+      <polygon data-testid="overlay-obb" points={pts} fill="transparent" stroke={ghost ? "transparent" : color} strokeWidth={1.5 * line} vectorEffect="non-scaling-stroke" className="cursor-help"
                style={{ pointerEvents: "all" }}
                onMouseMove={(e) => onHover(e, detectionTitle(det), ["oriented box (rotated)", det.src === "zoom" ? "found by the zoomed re-check" : "whole-frame detection"], color)} />
     );
@@ -283,7 +285,7 @@ export function BoxShape({ det, w, h, ghost, onHover }: {
   return (
     <>
       <rect data-testid="overlay-box" data-rejected={dropped ? det.rejected : undefined} x={x1 * w} y={y1 * h} width={(x2 - x1) * w} height={(y2 - y1) * h} fill="transparent"
-            stroke={ghost ? "transparent" : color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" className="cursor-help"
+            stroke={ghost ? "transparent" : color} strokeWidth={1.5 * line} vectorEffect="non-scaling-stroke" className="cursor-help"
             strokeDasharray={dropped ? "6 4" : undefined} style={{ pointerEvents: "all" }}
             onMouseMove={(e) => onHover(e, detectionTitle(det),
               dropped ? ["ignored: not counted as a vehicle", REJECT_TEXT[det.rejected!] ?? det.rejected!]
