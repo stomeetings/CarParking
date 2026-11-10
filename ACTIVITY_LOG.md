@@ -3151,3 +3151,8 @@ nearest generated bay. Snapshot to roll back to: `C:\F\Backups\CarParking\202610
 - Result (`SampleResult.tsx`): the summary lists "pins: P1 2/3" and the slot table says "2 of 3 vehicles (note)"; the hover text already did (`slotFlags`). `slotdraw.ts`: `pointInPoly`, `growPoly`.
 - Tests: pytest 222 passed, 3 skipped over the touched areas (+2: pin API round trip through save / refused capacity 25 / extend / re-fit / run with 2 vehicles of 3 and 3 spaces; the split / re-id helpers); vitest 298 passed (+6: 4 page flows, 2 helpers); tsc clean. One existing assertion changed (the bay row now also holds the capacity field).
 - Limits: a pin needs a calibrated zone (it lives in a zone's bay list); the pin_reach grace is not tunable on this page (default 25 %); nothing seen in a browser; images only (the Sample page has no video). Not deployed, not committed.
+
+## Item 186 — Sample test: a car whose foot point falls in the neighbouring bay now holds its own bay (A2 "Free" with a car in it)
+- `data/sample/freecarissue.png`: the dark car's box covers 86 % of A2, but on slanted bays its bottom centre lands in A1's polygon, so the point rule gave it to A1 and A2 stayed FREE.
+- `fixed_slots.py` `_cover_pass` (Sample test only, `cover_fallback`): a vehicle held by a slot it covers < `WEAK_COVER` (0.35) moves to a free slot whose centre is under its box and which it covers >= `COVER_MIN` (now 0.4, was 0.6). Live trackers unchanged.
+- Test: `test_cover_pass_moves_a_car_from_a_neighbour_its_foot_point_fell_into`. Not deployed.

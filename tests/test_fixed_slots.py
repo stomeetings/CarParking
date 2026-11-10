@@ -813,3 +813,17 @@ def test_unknown_slots_keep_their_sessions_and_do_not_count_as_a_mismatch(tmp_pa
     mon.process(FRAME, t=0.0)
     assert mon.tracker.slots[3]["state"] is None
     assert mon.session_check["expected"] == 0 and mon.session_check["open"] == 0 and mon.session_check["since"] is None
+
+
+def test_cover_pass_moves_a_car_from_a_neighbour_its_foot_point_fell_into():
+    # slanted bays: the car's box covers most of bay 2, but its bottom centre lands in bay 1 below it (freecarissue.png, A2)
+    slots = [{"id": 1, "name": "A1", "poly": [[0.10, 0.62], [0.40, 0.62], [0.40, 0.80], [0.10, 0.80]]},
+             {"id": 2, "name": "A2", "poly": [[0.10, 0.40], [0.40, 0.40], [0.40, 0.62], [0.10, 0.62]]}]
+    car = det(240, 410, 760, 660)  # box x .12-.38, y .41-.66: covers all of A2, its foot point (y .635) is inside A1, which it covers 22 %
+    off = FixedSlotTracker(slots, "ground", hold=2, exit_hold=3, absent_free=True)
+    run(off, [[car]] * 5)
+    assert off.slots[2]["state"] != 1  # the point rule alone: A1 takes it
+    on = FixedSlotTracker(slots, "ground", hold=2, exit_hold=3, absent_free=True)
+    on.cover_fallback = True
+    run(on, [[car]] * 5)
+    assert on.slots[2]["state"] == 1 and on.slots[1]["state"] != 1

@@ -299,7 +299,8 @@ CLEAR_FRAMES = 30
 MAX_CAPACITY = 20  # the most vehicles an operator can say one slot holds
 CAPACITY_FRAMES = 5  # frames a capacity slot's vehicle count is judged over (see FixedSlotTracker._count_loads)
 CAPACITY_DISTINCT = 0.5  # footprint IoU from which two boxes in a capacity slot are one vehicle
-COVER_MIN = 0.6  # share of a free slot a box must cover for the Sample test's cover pass (FixedSlotTracker._cover_pass)
+WEAK_COVER = 0.35  # a held vehicle whose box covers less than this share of its slot may move to a free slot it covers >= COVER_MIN
+COVER_MIN = 0.4  # share of a free slot a box must cover for the Sample test's cover pass (FixedSlotTracker._cover_pass)
 INSIDE_SHARE = 0.5  # the most ground_on a vehicle whose reference point lies inside a bay needs to hold it (match_score)
 SPAWN_PAD = 0.1  # the new bay reaches this share of the footprint's height below the box bottom (the foot point is inside it)
 
@@ -657,8 +658,13 @@ class FixedSlotTracker(SlotTracker):
         whose centre is inside the box. A far tile is a few pixels tall, so the foot point of a small car lands just past it and
         the point rules above miss. The nearest slot to the box's bottom wins, so a slot behind a car is not taken for it."""
         cand = []
+        weak = {}  # a vehicle held only by a foot point that lands in a neighbour (slanted bays: the box bottom falls past its own bay's
+        # far edge) - it covers little of that slot; if a free slot is mostly under the box it belongs there (freecarissue.png: A2)
+        for i, j in out.items():
+            if overlap(self.slots[ids[j]]["poly"], np.float32(polys[i]))[1] < WEAK_COVER:
+                weak[i] = j
         for i, p in enumerate(polys):
-            if i in out:
+            if i in out and i not in weak:
                 continue
             box = np.float32(p)
             (x1, y1), (x2, y2) = box.min(0), box.max(0)
@@ -673,7 +679,9 @@ class FixedSlotTracker(SlotTracker):
                 if cover >= COVER_MIN:
                     cand.append((abs(float(y2) - float(cy)), -cover, i, j))
         for _, _, i, j in sorted(cand):
-            if i not in out and j not in used:
+            if (i not in out or i in weak) and j not in used:
+                if i in weak:
+                    used.discard(weak.pop(i))
                 out[i] = j
                 used.add(j)
 
