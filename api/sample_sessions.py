@@ -205,6 +205,12 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                             "ready": False, "note": "needs internet the first time"})
         return out
 
+    def default_tune() -> dict:
+        """The settings a new session starts with: the standard COCO detector (option A, yolov8s.pt, the stock car / bus / truck classes) when its weights are in the
+        project, else the profile camera's own detector. Never a bay model or a camera fine-tune: those are chosen on purpose."""
+        coco = next((m for m in model_list() if m.get("option") == "A" and m["ready"]), None)
+        return {**DEFAULT_TUNE, "model": coco["id"] if coco else "default"}
+
     def tuned(s: dict, t: Tune) -> dict:
         """Merge the request's settings into the session's and return what to run with ({"weights", "bay", "conf", "iou", "footprint", "encroach", "model"})."""
         known = {m["id"]: m for m in model_list()}
@@ -300,7 +306,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
 
     @app.get("/api/sample-sessions/models", dependencies=admin)
     def models():
-        return {"models": [{k: v for k, v in m.items() if k != "weights"} for m in model_list()], "defaults": DEFAULT_TUNE}
+        return {"models": [{k: v for k, v in m.items() if k != "weights"} for m in model_list()], "defaults": default_tune()}
 
     @app.get("/api/sample-sessions/service", dependencies=admin)
     async def service():
@@ -332,7 +338,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
         live = dict.fromkeys(("spillage", "obstacle_filter", "blocked_objects"), False)  # a sample test starts with every protection off; ask for each in the run
         h, w = frame.shape[:2]
         s = {"id": secrets.token_hex(8), "frame": frame, "w": w, "h": h, "image": data_url(frame), "cam": c.camera.id if c.camera else None,
-             "run": run, "live": live, "cache": {}, "tune": dict(DEFAULT_TUNE), "polygon": None, "record": None, "slots": [], "calibration": None,
+             "run": run, "live": live, "cache": {}, "tune": default_tune(), "polygon": None, "record": None, "slots": [], "calibration": None,
              "layout": "auto", "zones": {}, "job": None, "created": clock(), "updated": clock()}
         sessions[s["id"]] = s
         return view(s)

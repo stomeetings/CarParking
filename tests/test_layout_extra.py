@@ -204,21 +204,51 @@ def test_dots_on_the_first_two_lines_do_not_squeeze_the_row_into_that_slot():
     assert info["extent_m"] == pytest.approx(15.0, abs=0.2) and info["covers_m"] == pytest.approx(15.0, abs=0.4) and info["warnings"] == []
 
 
-def test_dots_closer_than_a_bay_only_guide_the_direction_the_zone_sets_the_size():
+def test_dots_closer_than_a_bay_set_the_start_and_direction_the_far_end_sets_the_size():
     c, t = cam(), truth(6)
     mid = lambda k: tuple((to_image(c, t.to_ground([[k, 2.5]]))[0] / (W, H)).tolist())  # noqa: E731
-    lay, info = X.layout_from_dots(c, [X.Dot(mid(1.0)), X.Dot(mid(1.4))], 6, W, H, outline_px=zone_outline(c, t), dot_at="mid")
-    assert info["guide_only"] and lay.width == pytest.approx(2.5, abs=0.05) and same_row(lay, t)
+    lay, info = X.layout_from_dots(c, [X.Dot(mid(0.0)), X.Dot(mid(0.4))], 6, W, H, outline_px=zone_outline(c, t), dot_at="mid")
+    assert info["guide_only"] and lay.width == pytest.approx(2.5, abs=0.05) and same_row(lay, t)  # Dot 1 is the start (here the zone's start): 6 bays to the far end
     assert any("closer than one bay" in w for w in info["warnings"])
 
 
-def test_dots_in_the_middle_of_the_row_keep_their_phase_and_the_bays_start_at_the_zone_edge():
+def test_the_first_dot_is_the_hard_start_nothing_is_drawn_before_it():
     c, t = cam(), truth(6)
-    off = t.with_params(origin=(t.origin[0] + 0.3, t.origin[1]))  # a row whose lines are 30 cm off the zone's edge
-    lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, off, 3)), X.Dot(dot_at(c, off, 4))], 6, W, H, outline_px=zone_outline(c, t))
-    assert lay.width == pytest.approx(2.5, abs=0.05)
-    assert lay.bays_ground()[0][0][0] == pytest.approx(off.origin[0] + 0.3 - 0.3, abs=0.12) or lay.bays_ground()[0][0][0] == pytest.approx(off.origin[0], abs=0.12)
-    assert abs(lay.bays_ground()[-1][1][0] - (t.origin[0] + 15.0)) < 0.5  # the last bay ends at the zone's far end
+    inner = t.with_params(origin=(t.origin[0] + 2.5, t.origin[1]), count=5)  # Dot 1 is one bay in from the zone's start; the row has 5 bays after it
+    lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, inner, 0)), X.Dot(dot_at(c, inner, 1))], 5, W, H, outline_px=zone_outline(c, t))
+    first = lay.bays_ground()[0]
+    assert first[0][0] == pytest.approx(inner.origin[0], abs=0.1)  # the first bay starts AT Dot 1, not at the zone's edge 2.5 m before it
+    assert lay.width == pytest.approx(2.5, abs=0.05) and info["warnings"] == []
+    assert abs(lay.bays_ground()[-1][1][0] - (t.origin[0] + 15.0)) < 0.2  # and the N bays end at the zone's far end
+
+
+def test_dots_closer_than_a_bay_span_from_dot_one_to_the_far_end():
+    c, t = cam(), truth(6)
+    mid = lambda k: tuple((to_image(c, t.to_ground([[k, 2.5]]))[0] / (W, H)).tolist())  # noqa: E731
+    lay, info = X.layout_from_dots(c, [X.Dot(mid(1.0)), X.Dot(mid(1.3))], 5, W, H, outline_px=zone_outline(c, t), dot_at="mid")
+    assert lay.bays_ground()[0][0][0] == pytest.approx(t.origin[0] + 1.0, abs=0.1)  # starts at Dot 1 (1.0 m along the row), the dot 0.3 m further is only a guide
+    assert info["guide_only"] and lay.width == pytest.approx(14.0 / 5, abs=0.05)  # 5 bays share the 14 m from Dot 1 to the end
+    assert abs(lay.bays_ground()[-1][1][0] - (t.origin[0] + 15.0)) < 0.2
+
+
+def test_stretch_to_fit_spans_from_the_first_dot_to_the_far_end_and_the_inward_margin_leaves_the_start_alone():
+    c, t = cam(), truth(6)
+    inner = t.with_params(origin=(t.origin[0] + 2.5, t.origin[1]))
+    lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, inner, 0)), X.Dot(dot_at(c, inner, 1))], 5, W, H, outline_px=zone_outline(c, t), fit_zone=True)
+    assert lay.width == pytest.approx(12.5 / 5, abs=0.05) and lay.bays_ground()[0][0][0] == pytest.approx(inner.origin[0], abs=0.1)
+    assert info["available_m"] == pytest.approx(12.5, abs=0.2)
+    plain, _ = lay.to_slots(c, W, H), None
+    margin, _ = X.inset_slots(lay, c, W, H, 0.15)
+    g0 = to_ground(c, np.array(margin[0]["poly"]) * (W, H))
+    assert g0[:, 0].min() == pytest.approx(inner.origin[0] + 0.15, abs=0.06)  # the margin is inward from Dot 1's line, in metres: it never moves the row's start outward
+    assert len(plain) == 5
+
+
+def test_a_first_dot_past_the_zone_end_is_reported():
+    c, t = cam(), truth(6)
+    late = t.with_params(origin=(t.origin[0] + 15.2, t.origin[1]))
+    _, info = X.layout_from_dots(c, [X.Dot(dot_at(c, late, 0)), X.Dot(dot_at(c, late, 1))], 5, W, H, width=2.5, outline_px=zone_outline(c, t))
+    assert any("past the zone's far end" in w for w in info["warnings"])
 
 
 def test_typed_line_numbers_still_fix_the_lattice_and_stretch_to_fit_works():
@@ -235,7 +265,7 @@ def test_a_count_that_does_not_fit_the_zone_is_reported_not_hidden():
     c, t = cam(), truth(6)
     lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, t, 0)), X.Dot(dot_at(c, t, 1))], 5, W, H, outline_px=zone_outline(c, t))
     assert lay.width == pytest.approx(2.5, abs=0.05) and any("cover" in w for w in info["warnings"])
-    assert info["coverage_pct"] == pytest.approx(83.3, abs=2) and any("% of the zone" in w and "leave the rest" in w for w in info["warnings"])
+    assert info["coverage_pct"] == pytest.approx(83.3, abs=2) and any("% of the" in w and "leave the rest" in w for w in info["warnings"])
     assert len(lay.bays_ground()) == 5  # the count is kept, the bays are not squeezed or stretched to hide the mismatch
 
 
@@ -269,3 +299,11 @@ def test_a_dot_in_the_middle_of_its_line_is_placed_by_its_own_place():
     assert same_row(lay, t)
     with pytest.raises(L.LayoutError):
         X.layout_from_dots(c, [X.Dot(mid(0), 0, "sideways"), X.Dot(mid(1), 1)], 6, W, H, outline_px=zone_outline(c, t))
+
+
+def test_one_dot_runs_toward_the_zones_far_end_whichever_way_its_long_edge_is_listed():
+    c, t = cam(), truth(6)
+    out = zone_outline(c, t)
+    for ring in (out, out[::-1]):  # the same zone listed in either direction
+        lay, info = X.layout_from_dots(c, [X.Dot(dot_at(c, t, 0))], 6, W, H, width=2.5, heading=0.0, outline_px=ring)
+        assert lay.bays_ground()[0][0][0] == pytest.approx(t.origin[0], abs=0.1) and same_row(lay, t) and info["warnings"] == []

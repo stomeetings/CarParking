@@ -112,6 +112,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const [samples, setSamples] = useState<{ folder: string; images: string[] } | null>(null);
   const [service, setService] = useState<Service | null>(null);
   const [tune, setTune] = useState<Tune>(TUNE_DEFAULTS);
+  const [tuneDefaults, setTuneDefaults] = useState<Tune>(TUNE_DEFAULTS); // the server's: the standard COCO detector selected by default
   const [models, setModels] = useState<ModelOption[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [open, setOpen] = useState({ calibrated: false, direct: false }); // the two ways of testing start closed: open the one you work on
@@ -178,7 +179,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   useEffect(() => {
     check();
     api.get<{ folder: string; images: string[] }>(`${BASE}/images`).then(setSamples).catch(() => setSamples(null));
-    api.get<{ models: ModelOption[]; defaults: Tune }>(`${BASE}/models`).then((m) => (setModels(m.models), setTune(m.defaults))).catch(() => setModels([]));
+    api.get<{ models: ModelOption[]; defaults: Tune }>(`${BASE}/models`).then((m) => (setModels(m.models), setTune(m.defaults), setTuneDefaults(m.defaults))).catch(() => setModels([]));
   }, [tokenKey, check]);
 
   const start = async (src: { file?: File; sample?: string }) => {
@@ -683,7 +684,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
             {(models.find((m) => m.id === tune.model)?.label ?? "This camera's own detector")} · conf {tune.conf.toFixed(2)} · IoU {tune.iou.toFixed(2)} · blocked {Math.round(tune.footprint * 100)} % · encroach {Math.round(tune.encroach * 100)} %
           </span>
         </button>
-      } actions={settingsOpen ? <Button variant="ghost" onClick={() => setTune({ ...TUNE_DEFAULTS })} data-testid="sess-settings-reset">Reset to defaults</Button> : undefined}>
+      } actions={settingsOpen ? <Button variant="ghost" onClick={() => setTune({ ...tuneDefaults })} data-testid="sess-settings-reset">Reset to defaults</Button> : undefined}>
         {settingsOpen ? (
           <div className="space-y-3" data-testid="sess-settings">
             {models.some((m) => m.option) && (

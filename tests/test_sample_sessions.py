@@ -279,7 +279,8 @@ def test_a_session_starts_at_a_lower_confidence_than_a_live_camera_and_lists_the
     with app_client(env, monkeypatch) as c:
         assert c.get("/api/sample-sessions/models").status_code == 401
         listed = c.get("/api/sample-sessions/models", headers=AUTH).json()
-        assert listed["defaults"] == {"model": "default", "conf": 0.20, "iou": 0.45, "footprint": 0.50, "encroach": 0.30}
+        assert listed["defaults"] == {"model": listed["defaults"]["model"], "conf": 0.20, "iou": 0.45, "footprint": 0.50, "encroach": 0.30}
+        assert listed["defaults"]["model"] in ("default", "yolov8s.pt")  # the standard COCO detector when its weights are in the project, else the camera's own
         ids = {m["id"]: m for m in listed["models"]}
         assert ids["default"]["kind"] == "vehicle" and "weights" not in ids["default"]  # never a path to the page
         assert any(m["kind"] == "bay" and "PKLot" in m["label"] for m in ids.values()) or True  # (the weights are in the project, not in the test's root)
@@ -288,12 +289,14 @@ def test_a_session_starts_at_a_lower_confidence_than_a_live_camera_and_lists_the
 
 def test_the_settings_reach_the_detector_and_the_rules_and_come_back_in_the_result(env, monkeypatch, scripted):
     with app_client(env, monkeypatch) as c:
+        model = c.get("/api/sample-sessions/models", headers=AUTH).json()["defaults"]["model"]  # the COCO baseline when its weights exist, else the camera's own
+        weights = None if model == "default" else model
         sid, _ = calibrated(c)
-        assert scripted["tunes"][-1] == {"weights": None, "bay": False, "conf": 0.20, "iou": 0.45}
+        assert scripted["tunes"][-1] == {"weights": weights, "bay": False, "conf": 0.20, "iou": 0.45}
         out = c.post(f"/api/sample-sessions/{sid}/run", headers=AUTH, json={"tune": {"conf": 0.12, "iou": 0.3, "footprint": 0.7, "encroach": 0.4}}).json()
-        assert scripted["tunes"][-1] == {"weights": None, "bay": False, "conf": 0.12, "iou": 0.3}
-        assert out["tune"] == {"model": "default", "conf": 0.12, "iou": 0.3, "footprint": 0.7, "encroach": 0.4}
-        assert out["detector"] == "This camera's own detector" and out["detected"] == len(CARS)
+        assert scripted["tunes"][-1] == {"weights": weights, "bay": False, "conf": 0.12, "iou": 0.3}
+        assert out["tune"] == {"model": model, "conf": 0.12, "iou": 0.3, "footprint": 0.7, "encroach": 0.4}
+        assert out["detector"] == ("This camera's own detector" if model == "default" else f"COCO · {model}") and out["detected"] == len(CARS)
         assert c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json()["tune"]["conf"] == 0.12  # kept for the next call
         assert c.post(f"/api/sample-sessions/{sid}/run", headers=AUTH, json={}).json()["tune"]["conf"] == 0.12
 
@@ -635,3 +638,12 @@ def test_a_level_geocalib_answer_on_an_aerial_picture_points_to_the_topdown_meth
         job = wait(c, s["id"])
         assert job["state"] == "error"
         assert "too level for ground" in job["error"] and "Top-down" in job["error"]
+
+
+def test_a_new_session_defaults_to_the_standard_coco_detector_when_its_weights_exist(env, monkeypatch, scripted, bay_root):
+    with app_client(env, monkeypatch) as c:  # (no yolov8s.pt yet: only the PKLot bay models are there, never chosen by default)
+        assert c.get("/api/sample-sessions/models", headers=AUTH).json()["defaults"]["model"] == "default"
+        (bay_root / "yolov8s.pt").write_bytes(b"x")
+        listed = c.get("/api/sample-sessions/models", headers=AUTH).json()
+        assert listed["defaults"]["model"] == "yolov8s.pt" and listed["defaults"]["conf"] == 0.20
+        assert new(c)["tune"] == listed["defaults"]  # a new session starts on it, no manual selection

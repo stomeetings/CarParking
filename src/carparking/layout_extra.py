@@ -44,9 +44,9 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
       * direction : the line through the dots when they span a few bays; else the zone's long side (dots in one slot cannot give a direction)
       * step      : from the dots' spacing; each dot's line number is typed or inferred from the spacing against the zone's nominal bay (zone length / N) or `width`.
                     Dots closer than one bay (all in one slot, or all on one line) give no step: the nominal bay of the zone is used
-      * start     : every line number typed -> the dots fix the lattice (line 0 = the row's first line). Otherwise the bays start at the zone's start edge, on the
-                    dots' own line positions (phase)
-      * count     : N bays of the step from the start, all of the zone; `fit_zone` makes the step zone length / N exactly (the dots then give only the direction)
+      * start     : the row STARTS AT THE DOTS: untyped, Dot 1 (the first dot along the row) is line 0, the first bay's start edge, and nothing is drawn before it;
+                    typed line numbers put line 0 where they say. The zone polygon only gives the far end
+      * count     : N bays of the step from the start. `fit_zone` (and dots closer than a bay) make the step (zone's far end - start) / N, so N bays span from Dot 1 to the end
     Without an outline the old behaviour stands (the extent is the dots'). dot_at: where on its separator the dot is: front (v = 0), mid (depth / 2), back (depth).
     -> (layout, {"step", "residual_m", "dropped", "indices", "extent_m", "covers_m", "guide_only", "warnings"})"""
     if not dots or count < 1:
@@ -80,6 +80,10 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
         d = d_dots  # the dots span a few bays: their line is the row
     elif d_out is not None:
         d = d_out if d_dots is None or d_out @ d_dots >= 0 else -d_out  # the zone's long side: dots in one slot cannot give a direction
+        if d_dots is None and ext is not None:  # one dot: the row runs from it toward the far end of the zone (the side with more room), the depth side kept
+            ue = ext @ d
+            if float(ue.max()) - float(g[0] @ d) < float(g[0] @ d) - float(ue.min()):
+                d, flip = -d, not flip
         if d_dots is not None and abs(float(d_dots @ d)) < np.cos(np.radians(5.0)):  # (only worth saying when the dots' own line disagrees)
             warnings.append("the dots are close together: the zone's long side gives the row's direction")
     elif heading is not None and width:
@@ -127,7 +131,7 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
             st = width or nominal
             if not st:
                 raise LayoutError("the dots give no spacing: type the bay width")
-            return float(us.mean() - ks.mean() * st), float(st), [int(k) for k in ks]
+            return float(us.min() - ks.min() * st), float(st), [int(k) for k in ks]  # (the first dot along the row is where the row starts)
         u0_, step_ = np.linalg.lstsq(np.c_[np.ones(len(ks)), ks], us, rcond=None)[0]
         return float(u0_), float(step_), [int(k) for k in ks]
 
@@ -140,32 +144,34 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
         dropped.append(list(dots[keep[worst]].px))
         keep.pop(worst)
         u0, step, ks = solve(keep)
-    if guide_only and ext is not None and not width:
-        warnings.append("the dots are closer than one bay: used for direction only, the bay size is the zone's length over the expected count")
-    if fit_zone and nominal:
-        step = nominal
+    # the row STARTS at the dots: untyped, Dot 1 (the first dot along the row) is line 0 and the first bay's start edge; typed, line 0 is where the typed numbers say
+    u_first = u0 if (ext is None or typed) else u0 + step * float(min(ks))
+    u_end = float((ext @ d).max()) if ext is not None else None
+    avail = None if u_end is None else u_end - u_first  # the zone's length from the start of the row to its far end
+    if avail is not None and avail <= 0.3 * int(count):
+        warnings.append("the first dot is at or past the zone's far end: no room for the bays after it; move Dot 1 back or the zone's outline out")
+        avail = None
+    if avail is not None and (fit_zone or (guide_only and not width)):  # span the expected count from the anchor to the far end
+        step = avail / int(count)
+        if guide_only and not fit_zone:
+            warnings.append("the dots are closer than one bay: they set the start and direction, the bay size is the distance from Dot 1 to the zone's far end over the expected count")
     if step <= 0.3:
         raise LayoutError("the dots give bays narrower than 0.3 m: check their order or line numbers")
     resid = 0.0 if guide_only else float(np.sqrt(np.mean([(u[i] - (u0 + k * step)) ** 2 for i, k in zip(keep, ks)])))
     n = np.array([-d[1], d[0]]) * (-1.0 if flip else 1.0)
     v_of = {"front": 0.0, "mid": depth / 2, "back": depth}
     base_v = float(np.mean([g[i] @ n - v_of[dots[i].at or dot_at] for i in keep]))  # the front line passes this far across (each dot knows where on its line it is)
-    if ext is not None and not typed:  # the bays start at the zone's start edge, on the dots' own line positions
-        u_min = float((ext @ d).min())
-        u_first = u_min if guide_only or fit_zone else u0 + step * float(np.ceil((u_min - u0) / step - 0.25))
-    else:
-        u_first = u0  # typed line numbers (or no outline): line 0 is the row's first line
     extent, covers, pct = None, int(count) * step, None
     if ext is not None:
         extent = float(np.ptp(ext @ d))
-        pct = 100.0 * covers / extent if extent > 1e-6 else None
+        pct = 100.0 * covers / avail if avail else None  # coverage of the stretch from the row's start to the zone's far end
         if pct is not None and not 85.0 <= pct <= 115.0:
             what = "leave the rest of the zone empty" if pct < 100 else "run past the end of the zone"
-            warnings.append(f"{int(count)} bays of {step:.2f} m cover {covers:.1f} m = {pct:.0f} % of the zone's {extent:.1f} m: they {what}. "
+            warnings.append(f"{int(count)} bays of {step:.2f} m cover {covers:.1f} m = {pct:.0f} % of the {avail:.1f} m from the first dot to the zone's end: they {what}. "
                             f"Check the expected count or the dots' line numbers, or tick 'Stretch the bays to fit the zone exactly'")
     o = d * u_first + n * base_v
     lay = ZoneLayout(origin=(float(o[0]), float(o[1])), heading=heading_deg, flip=flip, width=step - gap, depth=depth, gap=gap, count=int(count), rows=int(rows), row_gap=row_gap)
-    return lay, {"step": round(step, 4), "residual_m": round(resid, 4), "dropped": dropped, "indices": ks, "extent_m": None if extent is None else round(extent, 3),
+    return lay, {"step": round(step, 4), "residual_m": round(resid, 4), "dropped": dropped, "indices": ks, "extent_m": None if extent is None else round(extent, 3), "available_m": None if avail is None else round(avail, 3),
                  "covers_m": round(covers, 3), "coverage_pct": None if pct is None else round(pct, 1), "guide_only": guide_only, "warnings": warnings}
 
 

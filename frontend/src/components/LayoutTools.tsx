@@ -152,9 +152,9 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
             ))}
           </ul>
         )}
-        <p className="text-xs text-muted">The dots only guide the spacing, scale and direction: the bays are laid across the whole zone outline.</p>
-        <label className="flex items-center gap-1.5 text-xs text-muted" title="Make every bay exactly the zone's length divided by the number of bays; the dots then give only the direction">
-          <input type="checkbox" checked={fitZone} data-testid="lay-fit-zone" onChange={(e) => setFitZone(e.target.checked)} /> Stretch the bays to fit the zone exactly
+        <p className="text-xs text-muted">Dot 1 (the first dot along the row, or line 0 when you type line numbers) is where the first bay starts: nothing is drawn before it. The dots give the direction and spacing; the bays then run to the far end of the zone outline.</p>
+        <label className="flex items-center gap-1.5 text-xs text-muted" title="Make every bay exactly the distance from Dot 1 to the zone's far end divided by the number of bays">
+          <input type="checkbox" checked={fitZone} data-testid="lay-fit-zone" onChange={(e) => setFitZone(e.target.checked)} /> Stretch the bays from Dot 1 to the zone's far end
         </label>
         <Button onClick={fromDots} disabled={busy || dots.length < 1} data-testid="lay-fit-dots"
                 title={dots.length === 1 ? "One dot needs the width and the heading" : "Fit the row to the dots and lay the bays"}><Wand2 size={14} /> {calibrated ? "Fit the row to the dots" : "Calibrate, then fit the row to the dots"}</Button>

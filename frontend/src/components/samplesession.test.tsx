@@ -48,14 +48,14 @@ const ZONE_MERGE = (upTo: number) => ({
 });
 
 interface Net { calls: { method: string; url: string; body?: Record<string, any> }[] }
-function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [number, string]; down?: boolean; images?: string[] } = {}): Net {
+function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [number, string]; down?: boolean; images?: string[]; defaultModel?: string } = {}): Net {
   const net: Net = { calls: [] };
   const queue = [...(opts.jobs ?? [])];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     net.calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : undefined });
     if (url === "/api/sample-sessions/service") return json({ service: opts.down ? "down" : "up", loaded: null, command: "docker compose --profile setup up -d setup" });
-    if (url === "/api/sample-sessions/models") return json({ defaults: DEFAULTS, models: MODELS });
+    if (url === "/api/sample-sessions/models") return json({ defaults: { ...DEFAULTS, ...(opts.defaultModel ? { model: opts.defaultModel } : {}) }, models: MODELS });
     if (url === "/api/sample-sessions/images") return json({ folder: "data/samples", images: opts.images ?? [] });
     if (url === "/api/sample-sessions" && method === "POST") return opts.fail ? json({ detail: opts.fail[1] }, opts.fail[0]) : json(SESSION);
     if (/\/job$/.test(url)) return json(queue.shift() ?? { id: "j", state: "done", stage: "done", progress: 1, result: { ...CAL, slots: SLOTS }, error: null });
@@ -296,6 +296,16 @@ describe("the detection settings", () => {
     expect(screen.getByTestId("sess-model-note").textContent).toContain("finds busy / free BAYS");
     fireEvent.click(screen.getByTestId("sess-settings-reset"));
     expect(screen.getByTestId("sess-settings-summary").textContent).toContain("conf 0.20 · IoU 0.45 · blocked 50 %");
+  });
+
+  it("starts on the standard COCO detector the server names as its default, and Reset returns to it", async () => {
+    serve({ defaultModel: "yolov8x.pt" });
+    show();
+    fireEvent.click(screen.getByTestId("sess-settings-toggle"));
+    await waitFor(() => expect((screen.getByTestId("sess-model") as HTMLSelectElement).value).toBe("yolov8x.pt")); // COCO selected without touching the list
+    fireEvent.change(screen.getByTestId("sess-model"), { target: { value: "models/parking_yolo.pt" } });
+    fireEvent.click(screen.getByTestId("sess-settings-reset"));
+    expect((screen.getByTestId("sess-model") as HTMLSelectElement).value).toBe("yolov8x.pt");
   });
 
   it("sends the settings with the zone's SAM, Calibrate and Run, and shows what the run used and found", async () => {
