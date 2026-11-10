@@ -446,3 +446,17 @@ def test_an_expected_bay_count_is_exact_whatever_the_cars_or_the_zone_length(n):
         widths = widths[1:-1]  # (the end bays are cut by the picture's edge)
         steps = np.diff(widths)
         assert (steps <= 0.005 * max(widths)).all() or (steps >= -0.005 * max(widths)).all()  # steadily changing with the perspective, no jumps
+
+
+def test_pins_are_set_apart_from_the_laid_bays_and_keep_their_names_when_the_grid_changes():
+    pin = {"id": 105, "name": "P1", "poly": [[0.1, 0.1], [0.3, 0.1], [0.3, 0.3]], "capacity": 3}
+    bays = [{"id": 101, "name": "A1", "poly": []}, {"id": 102, "name": "A2", "poly": []}, {"id": 103, "name": "A3", "poly": [], "capacity": 1}]
+    laid, pins = ss.split_pins([*bays, pin])
+    assert laid == bays and pins == [pin] and not ss.is_pin(bays[2]) and ss.is_pin(pin)
+    assert ss.with_pins(laid, pins, 1)[-1] == pin  # a free id keeps it as it was
+    grown = [*bays, *[{"id": 104 + k, "name": f"A{4 + k}", "poly": []} for k in range(3)]]  # the grid grew over the pin's id
+    out = ss.with_pins(grown, pins, 1)
+    moved = [x for x in out if x["name"] == "P1"][0]
+    assert moved["id"] == 107 and moved["capacity"] == 3 and len({x["id"] for x in out}) == len(out)
+    assert ss.with_pins(laid, [{**pin, "id": 205}], 1)[-1]["id"] == 104  # not one of zone 1's ids: gets zone 1's next free one
+    assert not ss.is_pin({"capacity": "x"}) and not ss.is_pin({})

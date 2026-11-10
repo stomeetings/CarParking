@@ -189,6 +189,32 @@ def order_along_row(slots: list[dict], outline, w: int, h: int) -> list[dict]:
     return [slots[i] for r in rows for i in sorted(r, key=lambda i: float(cs[i] @ u))]
 
 
+def is_pin(slot: dict) -> bool:
+    """A capacity pin: a bay the operator says holds more than one vehicle (fixed_slots.validate_slots keeps `capacity` only above 1). It is placed by hand, not laid by the grid."""
+    try:
+        return int(slot.get("capacity") or 1) > 1
+    except (TypeError, ValueError):
+        return False
+
+
+def split_pins(slots: list[dict]) -> tuple[list[dict], list[dict]]:
+    """A zone's bays -> (the laid bays, its capacity pins): the grid steps (extend, re-fit, re-lay) work on the laid bays only, so a hand-placed pin neither bends the row nor is renamed A5."""
+    return [s for s in slots if not is_pin(s)], [s for s in slots if is_pin(s)]
+
+
+def with_pins(bays: list[dict], pins: list[dict], zone: int) -> list[dict]:
+    """The zone's laid bays plus its pins again, in id order. A pin keeps its id and name unless a new bay took that id (or it is not one of this zone's ids): it then gets the next free one."""
+    used = {b["id"] for b in bays}
+    out = list(bays)
+    for p in pins:
+        pid = p["id"] if p["id"] not in used and p["id"] // 100 == zone else next((zone * 100 + n for n in range(1, MAX_ZONE_BAYS + 1) if zone * 100 + n not in used), None)
+        if pid is None:
+            break
+        used.add(pid)
+        out.append({**p, "id": pid})
+    return sorted(out, key=lambda b: b["id"])
+
+
 def zone_bays(slots: list[dict], zone: int, outline=None, w: int = 1, h: int = 1) -> tuple[list[dict], int]:
     """A zone's own calibrated grid -> its bays in row order (see order_along_row, when the outline is given), renumbered zone * 100 + n and named
     after the zone (A1, A2 ...). -> (bays, how many were left out above MAX_ZONE_BAYS)."""

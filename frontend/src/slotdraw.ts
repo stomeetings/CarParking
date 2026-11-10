@@ -59,6 +59,37 @@ export function polyProblem(poly: Pt[]): string | null {
   return null;
 }
 
+/** True when p lies inside (or on the edge of) the polygon (ray casting). */
+export function pointInPoly(p: Pt, poly: Pt[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    if ((yi > p[1]) !== (yj > p[1]) && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/** The polygon grown outward by d (frame fractions): every corner moves along the mitre of its two edge normals, so each edge ends up d from where it was.
+ * For a convex polygon of any winding; the mitre is capped so a sharp corner does not shoot off. Corners are not clamped to the frame (the picture clips them). */
+export function growPoly(poly: Pt[], d: number): Pt[] {
+  const n = poly.length;
+  if (n < 3 || d === 0) return poly.map(([x, y]) => [x, y] as Pt);
+  const turn = poly.reduce((a, [x, y], i) => a + x * poly[(i + 1) % n][1] - poly[(i + 1) % n][0] * y, 0) >= 0 ? 1 : -1;
+  const normal = (a: Pt, b: Pt): Pt => {
+    const dx = b[0] - a[0];
+    const dy = b[1] - a[1];
+    const len = Math.hypot(dx, dy) || 1;
+    return [(turn * dy) / len, (-turn * dx) / len];
+  };
+  return poly.map((q, i) => {
+    const n1 = normal(poly[(i + n - 1) % n], q);
+    const n2 = normal(q, poly[(i + 1) % n]);
+    const k = d / Math.max(0.25, 1 + n1[0] * n2[0] + n1[1] * n2[1]);
+    return [round4(q[0] + (n1[0] + n2[0]) * k), round4(q[1] + (n1[1] + n2[1]) * k)] as Pt;
+  });
+}
+
 /** Add the drawn polygon as a new slot -> the slots, or an error. */
 export function addSlot(slots: DrawnSlot[], poly: Pt[], name?: string): { slots: DrawnSlot[]; error?: string } {
   const problem = polyProblem(poly);

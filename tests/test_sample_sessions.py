@@ -613,6 +613,41 @@ def test_a_zone_can_be_extended_by_the_next_bays_and_its_bays_edited(env, monkey
         assert c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": moved, "outline": [[0.1, 0.1], [1.5, 0.2], [0.5, 0.5]]}).status_code == 422
 
 
+def test_a_capacity_pin_survives_extend_and_refit_and_counts_its_vehicles_in_the_run(env, monkeypatch, scripted):
+    """Port of the live dashboard's "manual pin with capacity": a hand-placed slot with capacity N in a zone. The grid steps leave it alone, the run counts the
+    vehicles standing on it (up to N) through the same tracker as the live view, and the total counts N spaces."""
+    cam = test_setup_api.CAM
+    pin_poly = (to_image(cam, [(-4.5, 9.5), (2.5, 9.5), (2.5, 15.0), (-4.5, 15.0)]) / (W, H)).round(4).tolist()  # around the two cars of the zone
+    with app_client(env, monkeypatch) as c:
+        sid = new(c)["id"]
+        a = zone_cal(c, sid, 1, NEAR)["result"]["zones"][0]["slots"]
+        pin = {"id": 150, "name": "P1", "poly": pin_poly, "capacity": 3}
+        r = c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": [*a, pin]})
+        assert r.status_code == 200, r.text
+        saved = [x for x in r.json()["zones"][0]["slots"] if x["id"] == 150][0]
+        assert saved["capacity"] == 3 and saved["name"] == "P1"
+        bad = c.put(f"/api/sample-sessions/{sid}/zones/1/slots", headers=AUTH, json={"slots": [*a, {**pin, "capacity": 25}]})
+        assert bad.status_code == 422 and "capacity" in bad.text  # the live limit: a whole number from 1 to 20
+        # "Add next 1" continues the row from the laid bays: the pin keeps its id and name, and is not renamed A<n>
+        ext = c.post(f"/api/sample-sessions/{sid}/zones/1/extend", headers=AUTH, json={"count": 1})
+        assert ext.status_code == 200, ext.text
+        zs = ext.json()["zones"][0]["slots"]
+        assert [x["name"] for x in zs if x["id"] != 150] == [f"A{k}" for k in range(1, len(zs))]
+        assert [x for x in zs if x["id"] == 150][0]["name"] == "P1" and [x for x in zs if x["id"] == 150][0]["capacity"] == 3
+        # a re-fit of the laid bays leaves it too
+        rf = c.post(f"/api/sample-sessions/{sid}/zones/1/layout", headers=AUTH, json={"mode": "refit", "count": 1})
+        assert rf.status_code == 200, rf.text
+        zs = rf.json()["zones"][0]["slots"]
+        assert [x for x in zs if x["id"] == 150][0]["capacity"] == 3
+        # the run: the grid bays whose centre is under the pin are removed (the page does it when the pin is dropped; none here: the grid lies at the pin's near edge)
+        under = [x["id"] for x in zs if x["id"] != 150 and cv2.pointPolygonTest(np.float32(pin_poly), (float(np.mean([q[0] for q in x["poly"]])), float(np.mean([q[1] for q in x["poly"]]))), False) >= 0]
+        out = c.post(f"/api/sample-sessions/{sid}/run", headers=AUTH, json={"layout": "zones", "skip": under}).json()
+        p1 = [x for x in out["slots"] if x["id"] == 150][0]
+        assert p1["capacity"] == 3 and p1["vehicles"] == 2 and p1["state"] == "BUSY", p1
+        assert out["counts"]["slots"] == len(out["slots"]) - 1 + 3  # the pin is 3 spaces
+        assert out["counts"]["busy"] + out["counts"]["free"] + out["counts"]["unknown"] == out["counts"]["slots"]
+
+
 # ---- top-down (aerial) scale: no GeoCalib; a level GeoCalib answer says what to choose -----------------------------------------------------
 def test_the_topdown_method_needs_no_setup_service_and_takes_its_scale_from_the_typed_distance(env, monkeypatch, scripted):
     net = Net(setup_up=False)  # the setup service is down: top-down must not need it

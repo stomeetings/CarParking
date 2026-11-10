@@ -514,7 +514,9 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
         z = zone_of(s, zone)
         try:
             in_picture = "cars" in ((z["calibration"].get("sizing") or {}).get("source") or "")  # bays laid from the cars: continue them in the picture
-            bays, added = ss.extend_zone(z["record"], z["slots"], z["outline"], zone, body.count, s["w"], s["h"], in_picture)
+            laid, pins = ss.split_pins(z["slots"])  # (a capacity pin is placed by hand: the row continues from the laid bays, and the pin keeps its name)
+            bays, added = ss.extend_zone(z["record"], laid, z["outline"], zone, body.count, s["w"], s["h"], in_picture)
+            bays = ss.with_pins(bays, pins, zone)
         except ss.SessionError as e:
             raise HTTPException(409, str(e)) from None
         z["slots"] = bays
@@ -525,7 +527,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
 
     @app.post("/api/sample-sessions/{sid}/zones/{zone}/layout", dependencies=admin)
     def lay_zone(sid: str, zone: int, body: LayoutIn):
-        """The zone's bays laid from marks in ground metres (see LayoutIn). Replaces the zone's bays; the lattice is returned so the page can show its metres."""
+        """The zone's bays laid from marks in ground metres (see LayoutIn). Replaces the zone's laid bays (its capacity pins stay); the lattice is returned so the page can show its metres."""
         from carparking import layout as lo
         from carparking import layout_extra as lx
         from carparking.layout_snap import snap_lattice
@@ -547,9 +549,10 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
                     raise HTTPException(422, "master: draw the master bay (4 corners)")
                 lay, info = lx.clone_master(cam, body.master, body.count, w, h, body.master_index, body.rows, body.gap, body.row_gap)
             else:
-                if not z["slots"]:
+                laid = ss.split_pins(z["slots"])[0]
+                if not laid:
                     raise HTTPException(409, "this zone has no bays to re-fit")
-                lay = lo.refit(z["slots"], cam, w, h, body.count if body.count > 1 else None)
+                lay = lo.refit(laid, cam, w, h, body.count if body.count > 1 else None)
                 info = {}
             report = None
             if body.snap:
@@ -563,7 +566,7 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
         if not slots:
             raise HTTPException(422, "no bay of the layout is inside the picture")
         bays, over = ss.zone_bays(slots, zone, z["outline"], w, h)
-        z["slots"], z["layout"] = bays, lay.to_dict()
+        z["slots"], z["layout"] = ss.with_pins(bays, ss.split_pins(z["slots"])[1], zone), lay.to_dict()  # (the zone's capacity pins stay when its grid is laid again)
         z["calibration"] = {**z["calibration"], "bays": len(bays)}
         warn = [f"{over} bay(s) over the {ss.MAX_ZONE_BAYS} of one zone were left out"] if over else []
         warn += list((info or {}).pop("warnings", []) or [])

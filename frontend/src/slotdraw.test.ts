@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addSlot, area, fromJson, mapProblems, moveSlot, moveVertex, nearFirst, rectPoly, setCapacity, toJson, type DrawnSlot } from "./slotdraw";
+import { addSlot, area, fromJson, mapProblems, moveSlot, moveVertex, nearFirst, pointInPoly, growPoly, rectPoly, setCapacity, toJson, type DrawnSlot } from "./slotdraw";
 
 const SIZE: [number, number] = [2560, 1440];
 const square = (x: number, y: number, d = 0.1) => [[x, y], [x + d, y], [x + d, y + d], [x, y + d]] as [number, number][];
@@ -71,5 +71,21 @@ describe("capacity (vehicles per slot)", () => {
     const text = toJson("cam", setCapacity(base, 1, "3"), [1000, 500]);
     expect(fromJson(text, [1000, 500])[0].capacity).toBe(3);
     expect("capacity" in fromJson(toJson("cam", base, [1000, 500]), [1000, 500])[0]).toBe(false);
+  });
+});
+
+describe("capacity pin helpers", () => {
+  const box: [number, number][] = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+  it("finds the points inside a polygon (a bay centre under a pin)", () => {
+    expect(pointInPoly([0.5, 0.5], box)).toBe(true);
+    expect(pointInPoly([0.7, 0.5], box)).toBe(false);
+    expect(pointInPoly([0.5, 0.3], box)).toBe(false);
+    expect(pointInPoly([0.1, 0.1], [[0, 0], [1, 0]])).toBe(false);
+  });
+  it("grows a polygon outward by a distance, whichever way it is wound", () => {
+    expect(growPoly(box, 0.1)).toEqual([[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]]);
+    expect(growPoly([...box].reverse(), 0.1).map(([x, y]) => [x, y])).toEqual([[0.3, 0.7], [0.7, 0.7], [0.7, 0.3], [0.3, 0.3]]);
+    expect(growPoly(box, 0)).toEqual(box);
+    expect(growPoly([[0, 0], [1, 1]], 0.1)).toEqual([[0, 0], [1, 1]]);
   });
 });

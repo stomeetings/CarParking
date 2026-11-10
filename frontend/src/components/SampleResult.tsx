@@ -171,6 +171,8 @@ export function ResultPanel({ result, label, expected }: { result: SampleResult;
           {result.obstacle ? ` · obstacle filter dropped ${result.obstacle.rejected}` : ""}
           {result.kind === "session" && result.slots.some((x) => x.id >= 1000)
             ? ` · ${result.slots.filter((x) => x.id >= 1000).length} bay(s) added for vehicles off the grid (D1, D2 …)` : ""}
+          {result.slots.some((x) => (x.capacity ?? 1) > 1)
+            ? ` · pins: ${result.slots.filter((x) => (x.capacity ?? 1) > 1).map((x) => `${x.name} ${x.vehicles ?? 0}/${x.capacity}`).join(", ")}` : ""}
         </p>
         {result.unplaced && result.unplaced.length > 0 && (
           <p className="text-xs text-muted" data-testid="sample-unplaced">
@@ -188,7 +190,10 @@ export function ResultPanel({ result, label, expected }: { result: SampleResult;
                 <tr key={s.id} data-testid="sample-slot-row" data-display={s.display ?? s.state}>
                   <td className="px-3 py-1.5 font-medium">{s.name}{(s as { zone?: string }).zone ? <span className="ml-1 text-xs font-normal text-muted">· {(s as { zone?: string }).zone}</span> : null}</td>
                   <td className="px-3 py-1.5">{s.display ?? s.state}</td>
-                  <td className="px-3 py-1.5 text-xs text-muted">{s.blocked_by?.length ? `blocked by ${s.blocked_by.join(", ")}` : s.encroached_by?.length ? `encroached by ${s.encroached_by.join(", ")}` : (s as { by?: string }).by ?? ""}</td>
+                  <td className="px-3 py-1.5 text-xs text-muted" data-testid="sample-slot-note">{[
+                    s.blocked_by?.length ? `blocked by ${s.blocked_by.join(", ")}` : s.encroached_by?.length ? `encroached by ${s.encroached_by.join(", ")}` : (s as { by?: string }).by ?? "",
+                    s.capacity && s.capacity > 1 ? `${s.vehicles ?? 0} of ${s.capacity} vehicles${s.count_note ? ` (${s.count_note})` : ""}` : "",
+                  ].filter(Boolean).join(" · ")}</td>
                 </tr>
               ))}
             </tbody>

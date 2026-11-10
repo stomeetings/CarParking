@@ -48,7 +48,7 @@ const ZONE_MERGE = (upTo: number) => ({
 });
 
 interface Net { calls: { method: string; url: string; body?: Record<string, any> }[] }
-function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [number, string]; down?: boolean; images?: string[]; defaultModel?: string } = {}): Net {
+function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [number, string]; down?: boolean; images?: string[]; defaultModel?: string; runResult?: SampleResult } = {}): Net {
   const net: Net = { calls: [] };
   const queue = [...(opts.jobs ?? [])];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
@@ -84,7 +84,7 @@ function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [num
       return json({ ...ZONE_MERGE(1), zones: [{ ...ZONE_MERGE(1).zones[0], slots: b.slots }], zone_slots: b.slots });
     }
     if (/\/direct$/.test(url)) return json(DIRECT_RESULT);
-    if (/\/run$/.test(url)) return opts.failRun ? json({ detail: opts.failRun[1] }, opts.failRun[0]) : json(RESULT);
+    if (/\/run$/.test(url)) return opts.failRun ? json({ detail: opts.failRun[1] }, opts.failRun[0]) : json(opts.runResult ?? RESULT);
     if (url.startsWith("/api/sample-sessions/") && method === "DELETE") return json({ discarded: "s1" });
     return json({});
   });
@@ -719,7 +719,7 @@ describe("zones: SAM + GeoCalib per zone", () => {
     await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(3), { timeout: 4000 });
     const second = net.calls.filter((c) => c.url.endsWith("/calibrate"))[1].body!;
     expect([second.zone, second.polygon.length]).toEqual([2, 4]);
-    expect(screen.getAllByTestId("zone-bay-row").map((r) => r.textContent?.replace("Edit", ""))).toEqual(["A1 · Zone A", "A2 · Zone A", "B2 · Zone B"]);
+    expect(screen.getAllByTestId("zone-bay-row").map((r) => r.querySelector("span")?.textContent)).toEqual(["A1 · Zone A", "A2 · Zone A", "B2 · Zone B"]); // (the row also has its capacity field)
     expect(screen.getByTestId("zone-dropped").textContent).toContain("B1 = A2");
     expect(screen.getAllByTestId("zone-layer").map((l) => [l.getAttribute("data-zone"), l.getAttribute("data-active")])).toEqual([["1", "0"], ["2", "1"]]);
     expect(screen.queryAllByTestId("sess-slot")).toHaveLength(0); // the whole-picture grid is not drawn in zones
@@ -1043,5 +1043,98 @@ describe("dynamic slots and zone rows", () => {
     fireEvent.click(screen.getByTestId("zone-run"));
     await waitFor(() => expect(net.calls.filter((c) => c.url.endsWith("/run"))).toHaveLength(2));
     expect(net.calls.filter((c) => c.url.endsWith("/run"))[1].body!.dynamic).toBe(true);
+  });
+});
+
+describe("capacity pins (the live dashboard's manual pin with a capacity, on the sample page)", () => {
+  const ready = async (net: Net) => {
+    show();
+    await upload();
+    clickAt(0.2, 0.8);
+    clickAt(0.4, 0.8);
+    fireEvent.change(screen.getByTestId("sess-ref-metres"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("zone-draw"));
+    [[0.1, 0.9], [0.4, 0.9], [0.4, 0.4], [0.1, 0.4]].forEach(([a, b]) => clickAt(a, b));
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(2), { timeout: 4000 });
+    return net;
+  };
+  const canvas = () => screen.getByTestId("sess-canvas");
+  const rows = () => screen.getAllByTestId("zone-bay-row").map((r) => r.textContent?.split(" ·")[0]);
+
+  it("drags a rectangle with a capacity: the pin replaces the grid bay under it, is saved with its capacity before the run and its removed bay is sent as skipped", async () => {
+    const net = await ready(serve());
+    expect(screen.getByTestId("pin-margin-note").textContent).toMatch(/Without Dynamic slots/);
+    fireEvent.click(screen.getByTestId("pin-rect"));
+    expect(screen.getByTestId("pin-hint").textContent).toMatch(/Drag a rectangle/);
+    fireEvent.change(screen.getByTestId("pin-cap"), { target: { value: "3" } });
+    fireEvent.mouseDown(canvas(), { button: 0, clientX: 150, clientY: 225 }); // 0.15 / 0.45
+    fireEvent.mouseMove(canvas(), { clientX: 320, clientY: 325 });
+    expect(screen.getByTestId("pin-draft")).toBeTruthy(); // the rubber band
+    fireEvent.mouseUp(canvas(), { clientX: 320, clientY: 325 }); // 0.32 / 0.65: A1's middle (0.25, 0.55) is under it, A2's (0.35, 0.55) is not
+    expect(rows()).toEqual(["A2", "P1"]); // A1 left the run, the pin joined
+    expect(screen.getByTestId("zone-note").textContent).toMatch(/P1 added: room for 3 vehicles; it replaces the 1 grid bay/);
+    expect(screen.getAllByTestId("zone-bay").some((g) => g.textContent?.includes("P1 ×3"))).toBe(true); // the pin says how many it holds
+    expect((screen.getAllByTestId("capacity")[1] as HTMLInputElement).value).toBe("3");
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    const pin = put.body!.slots.find((b: { name: string }) => b.name === "P1");
+    expect(pin).toMatchObject({ id: 103, capacity: 3, poly: [[0.15, 0.45], [0.32, 0.45], [0.32, 0.65], [0.15, 0.65]] });
+    expect(posts(net, "/run").body!.skip).toEqual([101]);
+    expect(net.calls.filter((c) => /zones\/1\/slots$|\/run$/.test(c.url)).map((c) => c.url.split("/").pop())).toEqual(["slots", "run"]);
+  });
+
+  it("a polygon pin is clicked corner by corner and finished with a button; a capacity out of range is refused; a bay's capacity can be set or cleared in the list", async () => {
+    const net = await ready(serve());
+    fireEvent.click(screen.getByTestId("pin-polygon"));
+    fireEvent.change(screen.getByTestId("pin-cap"), { target: { value: "25" } });
+    [[0.5, 0.2], [0.7, 0.2], [0.7, 0.3], [0.5, 0.3]].forEach(([a, b]) => clickAt(a, b));
+    expect(screen.getByTestId("pin-draft")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("pin-finish"));
+    expect(screen.getByTestId("zone-note").textContent).toMatch(/whole number from 1 to 20/); // the live limit
+    expect(rows()).toEqual(["A1", "A2"]);
+    fireEvent.change(screen.getByTestId("pin-cap"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("pin-finish"));
+    expect(rows()).toEqual(["A1", "A2", "P1"]); // nothing lay under it: no grid bay left the run
+    const caps = () => screen.getAllByTestId("capacity") as HTMLInputElement[];
+    expect(caps().map((i) => i.value)).toEqual(["", "", "5"]);
+    fireEvent.change(caps()[2], { target: { value: "2" } }); // the pin's capacity edited in the list
+    fireEvent.change(caps()[0], { target: { value: "4" } }); // a grid bay made a pin of 4
+    fireEvent.change(caps()[1], { target: { value: "99" } }); // clamped to the limit
+    expect(caps().map((i) => i.value)).toEqual(["4", "20", "2"]);
+    fireEvent.change(caps()[0], { target: { value: "" } }); // cleared: a normal bay again
+    expect(caps()[0].value).toBe("");
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    const put = net.calls.find((c) => c.method === "PUT" && c.url.endsWith("/zones/1/slots"))!;
+    expect(put.body!.slots.map((b: { name: string; capacity?: number }) => [b.name, b.capacity])).toEqual([["A1", undefined], ["A2", 20], ["P1", 2]]);
+    expect(posts(net, "/run").body!.skip).toEqual([]);
+  });
+
+  it("draws the grace margin around a pin only with Dynamic slots, and says why", async () => {
+    await ready(serve());
+    fireEvent.click(screen.getByTestId("pin-rect"));
+    fireEvent.mouseDown(canvas(), { button: 0, clientX: 450, clientY: 100 });
+    fireEvent.mouseUp(canvas(), { clientX: 650, clientY: 200 });
+    expect(rows()).toEqual(["A1", "A2", "P1"]);
+    expect(screen.queryAllByTestId("pin-margin")).toHaveLength(0);
+    fireEvent.click(screen.getAllByTestId("sess-dynamic")[0]);
+    expect(screen.getAllByTestId("pin-margin")).toHaveLength(1);
+    expect(screen.getByTestId("pin-margin-note").textContent).toMatch(/up to 25 % of its height outside the pin/);
+    const ring = screen.getByTestId("pin-margin").getAttribute("points")!.split(" ").map((q) => q.split(",").map(Number));
+    expect(ring[0][0]).toBeCloseTo(800, 0); // grown outward by 25 % of the pin's height (0.2 of the picture = 0.05 = 100 px of 2000): the pin's left edge is at 900
+  });
+
+  it("shows each pin's vehicles of its capacity in the summary, the slot table and the note of the run", async () => {
+    const run = { ...RESULT, slots: [...RESULT.slots, { id: 103, name: "P1", state: "BUSY", poly: sq(0.5, 0.2), capacity: 3, vehicles: 2, count_note: "2 counted now" }] as unknown as SampleResult["slots"] };
+    const net = await ready(serve({ runResult: run }));
+    fireEvent.click(screen.getByTestId("zone-run"));
+    await screen.findByTestId("sample-summary");
+    expect(net.calls.some((c) => c.url.endsWith("/run"))).toBe(true);
+    expect(screen.getByTestId("sample-summary").textContent).toMatch(/pins: P1 2\/3/);
+    const note = screen.getAllByTestId("sample-slot-row").find((r) => r.textContent?.includes("P1"))!;
+    expect(within(note).getByTestId("sample-slot-note").textContent).toBe("2 of 3 vehicles (2 counted now)");
+    expect(screen.getAllByTestId("sample-slot-row").find((r) => r.textContent?.includes("B1"))!.querySelector("[data-testid=sample-slot-note]")!.textContent).toBe("");
   });
 });

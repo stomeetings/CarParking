@@ -1,11 +1,12 @@
-import { ChevronDown, ChevronRight, Crosshair, FlaskConical, Hand, ImageUp, Loader2, RefreshCw, SlidersHorizontal, Sparkles, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronDown, ChevronRight, Crosshair, FlaskConical, Hand, Hexagon, ImageUp, Loader2, Pin, RectangleHorizontal, RefreshCw, SlidersHorizontal, Sparkles, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ApiError, api } from "../api";
 import { points } from "../lib";
 import { type DepthSpec, depthGroup, groupCentre, inFrame, rotateGroup, turnPoints } from "../bayfine";
-import { type DrawnSlot, type Pt, area, moveSlot, moveVertex, pt } from "../slotdraw";
+import { type DrawnSlot, MAX_CAPACITY, type Pt, addSlot, area, growPoly, moveSlot, moveVertex, nearFirst, pointInPoly, pt, rectPoly, setCapacity } from "../slotdraw";
 import { type Expected, ExpectedInputs, type Layer, LayerBoxes, MAX_BYTES, ResultPanel, type SampleResult, readFile } from "./SampleResult";
 import { BayAdjust, useBayHistory } from "./BayAdjust";
+import { CapacityField } from "./CapacityField";
 import { DirectSlotCanvas } from "./DirectSlotCanvas";
 import { Sub } from "./Accordion";
 import { type DotNext, type LayoutAnswer, type LayoutDot, type LayoutRequest, LayoutTools } from "./LayoutTools";
@@ -52,7 +53,11 @@ const SLIDERS: { key: Exclude<keyof Tune, "model">; label: string; min: number; 
 ];
 
 interface Service { service: "up" | "down"; loaded: unknown; command: string }
-type Mode = "pins" | "ref" | "polygon" | "sam" | "edit" | "zone-outline" | "zone-sam" | "zone-dot";
+type Mode = "pins" | "ref" | "polygon" | "sam" | "edit" | "zone-outline" | "zone-sam" | "zone-dot" | "pin";
+/** A capacity pin (a bay that holds several vehicles, as on the live dashboard) is drawn in this colour. PIN_REACH mirrors history.DISPLAY_TUNING["pin_reach"]: with Dynamic slots on, a vehicle whose
+ * footprint middle stands up to this share of its own height outside the pin still counts. */
+const PIN_COLOUR = "#8e44ad";
+const PIN_REACH = 0.25;
 /** A zone being set up on the page: its outline (drawn), SAM's clicks in it and SAM's surface inside it (or none: the outline is the surface). */
 /** What Undo / Redo put back: the zones' bays and which of them are unsaved, and each zone's outline and SAM ground (a whole-zone turn moves them). */
 interface EditSnap { merge: ZoneMerge; dirty: number[]; shapes: Record<number, { outline: Pt[]; surface: Pt[] | null }> }
@@ -152,6 +157,11 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   const [secs, setSecs] = useState<Record<string, boolean | null>>({ scale: null, zones: null, review: null, outline: null, bays: null });
   const flipSec = (k: string, auto: boolean) => setSecs((o) => ({ ...o, [k]: !(o[k] ?? auto) }));
   const [nextDot, setNextDot] = useState<DotNext>({ index: "", at: "" });
+  const [pinCap, setPinCap] = useState("3"); // vehicles the next capacity pin holds
+  const [pinShape, setPinShape] = useState<"rect" | "polygon">("rect");
+  const [pinDraft, setPinDraft] = useState<Pt[]>([]); // corners of a polygon pin being drawn
+  const [pinStart, setPinStart] = useState<Pt | null>(null); // where a rectangle pin was started (mouse down)
+  const [pinCursor, setPinCursor] = useState<Pt | null>(null);
   const [layDots, setLayDots] = useState<(LayoutDot & { zone: number })[]>([]); // reference dots placed on a zone's separator lines
   const [layAnswer, setLayAnswer] = useState<LayoutAnswer | null>(null);
   const [loupeOn, setLoupeOn] = useState(true); // a magnifier at the cursor while placing points / dragging corners, for sub-pixel placement
@@ -252,6 +262,11 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
       const last = z.outline[z.outline.length - 1];
       if (last && Math.hypot((p[0] - last[0]) * w, (p[1] - last[1]) * h) < w / 200) return; // the second click of a double-click
       return setZone(z.id, { outline: [...z.outline, p], surface: null });
+    }
+    if (mode === "pin") { // a rectangle pin is dragged (mouse down ... up); a polygon pin is clicked corner by corner, the first corner closes it
+      if (pinShape !== "polygon" || !az) return;
+      if (nearFirst(pinDraft, p, [(stage.current?.clientWidth || w) * view.s, (stage.current?.clientHeight || h) * view.s])) return dropPin(pinDraft);
+      return setPinDraft([...pinDraft, p]);
     }
     if (mode === "zone-dot" && activeZone != null) return setLayDots([...layDots, { p, index: nextDot.index, at: nextDot.at, zone: activeZone }]);
     if (mode === "pins" && pins.length < 4) setPins([...pins, p]);
@@ -424,12 +439,14 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
   }); // (every render: applyLayout is a fresh closure over the latest merge)
 
   const startPan = (e: React.MouseEvent) => {
+    if (e.button === 0 && !panTool && mode === "pin" && pinShape === "rect" && az && !running) setPinStart(at(e));
     if (e.button === 1 || (e.button === 0 && panTool)) {
       e.preventDefault();
       setPanning({ x: e.clientX, y: e.clientY });
     }
   };
   const onMove = (e: React.MouseEvent) => {
+    if (mode === "pin") setPinCursor(at(e));
     if (loupeOn && session && viewport.current && stage.current) { // the magnifier follows the cursor while a point is being placed
       const vr = viewport.current.getBoundingClientRect();
       setLoupe({ cx: e.clientX - vr.left, cy: e.clientY - vr.top, p: at(e), pw: stage.current.getBoundingClientRect().width });
@@ -499,6 +516,44 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
     const zid = Math.floor(b.id / 100);
     const used = new Set(all.filter((x) => Math.floor(x.id / 100) === zid).concat(merge.zone_slots).map((x) => x.id));
     return Array.from({ length: 99 }, (_, i) => zid * 100 + i + 1).find((id) => !used.has(id)) ?? null;
+  };
+  // ---- capacity pins: a bay with `capacity` N holds up to N vehicles; the run counts the vehicles standing on it (the tracker of the live dashboard) and the total counts N spaces
+  const dropPin = (poly: Pt[]) => {
+    if (!az) return;
+    const cap = Number(pinCap);
+    if (!Number.isInteger(cap) || cap < 1 || cap > MAX_CAPACITY) return setZoneNote(`The pin's capacity is a whole number from 1 to ${MAX_CAPACITY}.`);
+    const r = addSlot([], poly);
+    if (r.error) return (setZoneNote(`Pin not added: ${r.error}.`), setPinDraft([]));
+    const taken = new Set([...merge.zone_slots, ...merge.zones.flatMap((z) => z.slots)].map((b) => b.id)); // (a bay the zones merged away still owns its id)
+    const id = Array.from({ length: 99 }, (_, i) => az.id * 100 + i + 1).find((x) => !taken.has(x));
+    if (id == null) return setZoneNote(`${az.name} already holds 99 bays.`);
+    const names = new Set(merge.zone_slots.map((b) => b.name));
+    const name = `P${Array.from({ length: 99 }, (_, i) => i + 1).find((k) => !names.has(`P${k}`))}`;
+    const shape = r.slots[0].poly;
+    // like the live auto grid ("a pin replaces the grid bay it overlaps"): the grid bays whose centre lies under the pin leave the run, so they do not also claim its vehicles
+    const under = bays.filter((b) => Math.floor(b.id / 100) === az.id && !((b.capacity ?? 1) > 1)
+      && pointInPoly([b.poly.reduce((m, q) => m + q[0], 0) / b.poly.length, b.poly.reduce((m, q) => m + q[1], 0) / b.poly.length], shape)).map((b) => b.id);
+    history.push();
+    commitBays([...bays, { id, name, poly: shape, ...(cap > 1 ? { capacity: cap } : {}) }]);
+    if (under.length) setSkip((all) => [...all, ...under]);
+    setSel(id);
+    setPinDraft([]);
+    setZoneNote(`${name} added: room for ${cap} vehicle${cap === 1 ? "" : "s"}${under.length ? `; it replaces the ${under.length} grid bay(s) under it (Restore them in step 3)` : ""}. It is saved before the run.`);
+  };
+  const setBayCapacity = (id: number, text: string) => {
+    const n = Math.floor(Number(text.trim()));
+    history.push();
+    commitBays(setCapacity(bays, id, text.trim() === "" || !Number.isFinite(n) ? "" : String(Math.min(MAX_CAPACITY, Math.max(1, n)))));
+  };
+  const onUp = (e: React.MouseEvent) => {
+    if (pinStart) {
+      const end = at(e);
+      const r = stage.current!.getBoundingClientRect();
+      setPinStart(null);
+      if (Math.abs(end[0] - pinStart[0]) * r.width > 4 && Math.abs(end[1] - pinStart[1]) * r.height > 4) dropPin(rectPoly(pinStart, end));
+    }
+    setDrag(null);
+    setPanning(null);
   };
   const zonesCard = () => (
     <>
@@ -589,6 +644,45 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                   </div>
                   <Button variant={mode === "edit" ? "primary" : "outline"} onClick={() => setMode("edit")} data-testid="zone-edit-mode">Edit bays</Button>
                   <p className="text-xs text-muted">Edit bays: click a bay to select it, drag it to move it, drag its corners to reshape it. Edits are saved before the next bays are added and before the run.</p>
+                  <div className="space-y-1.5 rounded-md border border-line p-2" data-testid="pin-tools">
+                    <p className="flex items-center gap-1 text-xs font-semibold text-ink"><Pin size={12} /> Capacity pin</p>
+                    <p className="text-xs text-muted">
+                      A pin holds several vehicles (a truck and a car in depth, or a spot with no painted bays). Draw it over that spot and give its capacity: the run counts the vehicles standing on it,
+                      up to that number, with the live dashboard's counter, and the total counts every space of it. Grid bays whose centre lies under a new pin leave the run (Restore them in step 3).
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button variant={mode === "pin" && pinShape === "rect" ? "primary" : "outline"} onClick={() => (setMode("pin"), setPinShape("rect"), setPinDraft([]))} data-testid="pin-rect">
+                        <RectangleHorizontal size={14} /> Rectangle
+                      </Button>
+                      <Button variant={mode === "pin" && pinShape === "polygon" ? "primary" : "outline"} onClick={() => (setMode("pin"), setPinShape("polygon"), setPinDraft([]))} data-testid="pin-polygon">
+                        <Hexagon size={14} /> Polygon
+                      </Button>
+                      <label className="flex items-center gap-1 text-xs text-muted" title={`Vehicles the next pin holds (1 to ${MAX_CAPACITY})`}>
+                        holds
+                        <input className="w-12 rounded-md border border-line px-1.5 py-1 text-sm text-ink" inputMode="numeric" value={pinCap} data-testid="pin-cap"
+                               onChange={(e) => setPinCap(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))} />
+                        vehicles
+                      </label>
+                    </div>
+                    {mode === "pin" && (
+                      <p className="text-xs text-muted" data-testid="pin-hint">
+                        {pinShape === "rect" ? "Drag a rectangle over the spot." : "Click each corner of the spot; click the first corner again, or press Finish, to close it."}
+                      </p>
+                    )}
+                    {mode === "pin" && pinShape === "polygon" && pinDraft.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="font-medium text-ink">{pinDraft.length} corner(s)</span>
+                        <Button variant="outline" onClick={() => setPinDraft((d) => d.slice(0, -1))} data-testid="pin-undo">Undo</Button>
+                        <Button variant="outline" disabled={pinDraft.length < 3} onClick={() => dropPin(pinDraft)} data-testid="pin-finish">Finish pin</Button>
+                        <Button variant="ghost" onClick={() => setPinDraft([])} data-testid="pin-cancel">Cancel</Button>
+                      </div>
+                    )}
+                    <p className="text-xs text-muted" data-testid="pin-margin-note">
+                      {dynamic
+                        ? `Dashed ring: with Dynamic slots a vehicle whose footprint middle stands up to ${Math.round(PIN_REACH * 100)} % of its height outside the pin still counts (the ring takes the pin's own height for the vehicle's, so it is approximate).`
+                        : "Without Dynamic slots only vehicles standing on the pin count; switch Dynamic slots on in step 3 to add the grace margin around it."}
+                    </p>
+                  </div>
                   {mode === "edit" && (
                     <>
                       <BayAdjust slots={bays} selected={sel} group={{ ids: bays.filter((b) => Math.floor(b.id / 100) === az.id).map((b) => b.id), label: `Whole ${az.name}` }}
@@ -628,6 +722,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           {bays.map((b) => (
             <li key={b.id} className={`flex items-center gap-2 px-2.5 py-1 text-sm ${b.id === sel ? "bg-primary/5" : ""}`} data-testid="zone-bay-row">
               <span className="flex-1">{b.name} <span className="text-xs text-muted">· {merge.zones.find((z) => z.zone === Math.floor(b.id / 100))?.name}</span></span>
+              <CapacityField value={b.capacity} onChange={(t) => setBayCapacity(b.id, t)} />
               <button type="button" className="rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/10" data-testid="zone-bay-edit"
                       title="Select it to move it or drag its corners" onClick={() => (setActiveZone(Math.floor(b.id / 100)), setSel(b.id), setMode("edit"))}>Edit</button>
               <button type="button" title="Remove this bay from the run" className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger" data-testid="zone-bay-delete"
@@ -801,8 +896,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               <img src={session.image} alt="Sample picture" className="absolute inset-0 h-full w-full object-fill" draggable={false} />
               <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="absolute inset-0 h-full w-full"
                    style={{ cursor: panning ? "grabbing" : panTool ? "grab" : mode !== "edit" ? "crosshair" : undefined }}
-                   onMouseDown={startPan} onClick={click} onMouseMove={onMove} onMouseUp={() => (setDrag(null), setPanning(null))}
-                   onMouseLeave={() => (setDrag(null), setPanning(null), setLoupe(null))}
+                   onMouseDown={startPan} onClick={click} onMouseMove={onMove} onMouseUp={onUp}
+                   onMouseLeave={() => (setDrag(null), setPanning(null), setLoupe(null), setPinStart(null))}
                    data-testid="sess-canvas">
                 {<>
                   {[...zones.filter((z) => z.id !== activeZone), ...(az ? [az] : [])].map((z) => {
@@ -823,12 +918,17 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                         {on && z.sam.map(({ p, keep }, i) => <circle key={`s${i}`} cx={px(p)[0]} cy={px(p)[1]} r={dot} fill={keep ? "#0ea5b7" : "#dc2626"} pointerEvents="none" data-testid="zone-sam-click" />)}
                         {bays.filter((b) => Math.floor(b.id / 100) === z.id).map((b) => (
                           <g key={b.id} data-testid="zone-bay" data-id={b.id}>
-                            <polygon points={points(b.poly, w, h)} fill={b.id === sel ? "rgba(79,70,229,0.25)" : `${colour}26`} stroke={b.id === sel ? "#4f46e5" : colour}
-                                     strokeWidth={b.id === sel ? edgeW + 0.5 : edgeW} vectorEffect="non-scaling-stroke" shapeRendering="geometricPrecision" style={{ cursor: on ? (mode === "edit" ? "move" : "default") : "pointer" }}
+                            {dynamic && (b.capacity ?? 1) > 1 && (
+                              <polygon points={points(growPoly(b.poly as Pt[], PIN_REACH * (Math.max(...b.poly.map((q) => q[1])) - Math.min(...b.poly.map((q) => q[1])))), w, h)} fill="none" stroke={PIN_COLOUR}
+                                       strokeWidth={edgeW} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" pointerEvents="none" data-testid="pin-margin" />
+                            )}
+                            <polygon points={points(b.poly, w, h)} fill={b.id === sel ? "rgba(79,70,229,0.25)" : (b.capacity ?? 1) > 1 ? `${PIN_COLOUR}33` : `${colour}26`}
+                                     stroke={b.id === sel ? "#4f46e5" : (b.capacity ?? 1) > 1 ? PIN_COLOUR : colour}
+                                     strokeWidth={b.id === sel || (b.capacity ?? 1) > 1 ? edgeW + 0.5 : edgeW} vectorEffect="non-scaling-stroke" shapeRendering="geometricPrecision" style={{ cursor: on ? (mode === "edit" ? "move" : "default") : "pointer" }}
                                      onClick={(e) => { if (!on && !panTool) (e.stopPropagation(), setActiveZone(z.id)); }}
                                      onMouseDown={(e) => { if (on && mode === "edit" && !panTool && e.button === 0) (e.stopPropagation(), setSel(b.id), history.push(), setDrag({ kind: "move", id: b.id, last: at(e) })); }} />
                             <text x={b.poly.reduce((m, p) => m + p[0], 0) / b.poly.length * w} y={b.poly.reduce((m, p) => m + p[1], 0) / b.poly.length * h} fontSize={font * 0.8}
-                                  textAnchor="middle" dominantBaseline="middle" fontWeight={700} fill="white" stroke="black" strokeWidth={font / 14} paintOrder="stroke" pointerEvents="none">{b.name}</text>
+                                  textAnchor="middle" dominantBaseline="middle" fontWeight={700} fill="white" stroke="black" strokeWidth={font / 14} paintOrder="stroke" pointerEvents="none">{b.name}{(b.capacity ?? 1) > 1 ? ` ×${b.capacity}` : ""}</text>
                           </g>
                         ))}
                         {on && mode === "edit" && bays.filter((b) => b.id === sel && Math.floor(b.id / 100) === z.id).flatMap((b) => b.poly.map(([x, y], i) => (
@@ -839,6 +939,17 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                     );
                   })}
                 </>}
+                {mode === "pin" && pinShape === "rect" && pinStart && pinCursor && (
+                  <polygon points={points(rectPoly(pinStart, pinCursor), w, h)} fill={`${PIN_COLOUR}26`} stroke={PIN_COLOUR} strokeWidth={2} vectorEffect="non-scaling-stroke"
+                           strokeDasharray="6 4" pointerEvents="none" data-testid="pin-draft" />
+                )}
+                {mode === "pin" && pinShape === "polygon" && pinDraft.length > 0 && (
+                  <>
+                    <polyline points={points(pinCursor ? [...pinDraft, pinCursor] : pinDraft, w, h)} fill={`${PIN_COLOUR}26`} stroke={PIN_COLOUR} strokeWidth={2} vectorEffect="non-scaling-stroke"
+                              strokeDasharray="6 4" pointerEvents="none" data-testid="pin-draft" />
+                    {pinDraft.map((p, i) => <circle key={`pd${i}`} cx={px(p)[0]} cy={px(p)[1]} r={dot * 0.8} fill={PIN_COLOUR} pointerEvents="none" />)}
+                  </>
+                )}
                 {pins.length > 1 && <polygon points={points(pins, w, h)} fill="rgba(88,86,214,0.12)" stroke="#5856d6" strokeWidth={2} vectorEffect="non-scaling-stroke" pointerEvents="none" />}
                 {pins.map((p, i) => (
                   <g key={`p${i}`} pointerEvents="none" data-testid="sess-pin">
