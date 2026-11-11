@@ -171,8 +171,9 @@ def _row_axes(outline, w: int, h: int) -> tuple[np.ndarray, np.ndarray]:
     return u, np.array([-u[1], u[0]])
 
 
-def order_along_row(slots: list[dict], outline, w: int, h: int) -> list[dict]:
-    """Bays in reading order of the zone: rows across the outline first (front to back), then along the row, so A1, A2, A3 ... follow each other."""
+def rows_along_row(slots: list[dict], outline, w: int, h: int) -> list[list[dict]]:
+    """The zone's bays grouped into rows across the outline (the upper row in the picture first, the one nearest the camera last), each row along the
+    row's direction: a new row where the bays' centres jump across the outline by more than ~half a bay."""
     if not slots:
         return []
     u, v = _row_axes(outline, w, h)
@@ -181,12 +182,17 @@ def order_along_row(slots: list[dict], outline, w: int, h: int) -> list[dict]:
     band = 0.6 * float(np.median(depth)) if depth else 1.0
     order = sorted(range(len(slots)), key=lambda i: float(cs[i] @ v))
     rows, last = [], None
-    for i in order:  # a new row across the outline where the bays' centres jump by more than ~half a bay
+    for i in order:
         if last is None or float(cs[i] @ v) - last > band:
             rows.append([])
         rows[-1].append(i)
         last = float(cs[i] @ v)
-    return [slots[i] for r in rows for i in sorted(r, key=lambda i: float(cs[i] @ u))]
+    return [[slots[i] for i in sorted(r, key=lambda i: float(cs[i] @ u))] for r in rows]
+
+
+def order_along_row(slots: list[dict], outline, w: int, h: int) -> list[dict]:
+    """Bays in reading order of the zone: rows across the outline first (front to back), then along the row, so A1, A2, A3 ... follow each other."""
+    return [x for r in rows_along_row(slots, outline, w, h) for x in r]
 
 
 def is_pin(slot: dict) -> bool:
@@ -678,6 +684,10 @@ def in_zone(raw: list[dict], outline, w: int, h: int, margin: float = 0.02) -> l
     return out
 
 
+EXTEND_GROWTH = (0.5, 2.0)  # bays continued in the picture stay within this of the last laid bay's width (the per-bay ratio compounds over 50 bays)
+EXTEND_OFF_ROW_DEG = 20.0  # the step from the last two bays must run along the row within this, else they do not give a direction to continue in
+
+
 def _extend_in_picture(ordered: list[dict], count: int, w: int, h: int) -> list[np.ndarray]:
     """Bays laid from the cars (front-left, front-right, back-right, back-left in the picture) continued in the picture: each next bay shares the
     last one's far side and is as wide as the last one, times the last two bays' width ratio (the row's own perspective, at most +-15 % a bay)."""
@@ -687,59 +697,82 @@ def _extend_in_picture(ordered: list[dict], count: int, w: int, h: int) -> list[
         prev = np.asarray(ordered[-2]["poly"], float) * (w, h)
         a, b = np.linalg.norm(last[1] - last[0]), np.linalg.norm(prev[1] - prev[0])
         r = float(np.clip(a / b, 0.85, 1.15)) if b > 0 else 1.0
-    out, cur = [], last
+    out, cur, grown = [], last, 1.0
     for k in range(1, count + 1):
-        front, back = (cur[1] - cur[0]) * r, (cur[2] - cur[3]) * r
+        rk = r if EXTEND_GROWTH[0] <= grown * r <= EXTEND_GROWTH[1] else 1.0  # (the ratio compounds: past the cap the bays keep their size, they never run away)
+        grown *= rk
+        front, back = (cur[1] - cur[0]) * rk, (cur[2] - cur[3]) * rk
         nxt = np.array([cur[1], cur[1] + front, cur[2] + back, cur[2]])
         out.append(nxt)
         cur = nxt
     return out
 
 
-def extend_zone(record: dict, slots: list[dict], outline, zone: int, count: int, w: int, h: int, in_picture: bool = False) -> tuple[list[dict], int]:
-    """`count` more bays after the zone's last one, stepped on the ground by the zone's own calibration: the step is the last two bays'
-    centre to centre distance (one bay: its own width along the row), so the new bays continue the row's spacing and perspective.
+def extend_zone(record: dict, slots: list[dict], outline, zone: int, count: int, w: int, h: int, in_picture: bool = False,
+                note: list[str] | None = None) -> tuple[list[dict], int]:
+    """`count` more bays after the zone's LAST ROW's last bay, stepped on the ground by the zone's own calibration: the step is that row's last two bays'
+    centre to centre distance (one bay in the row: its own width along the row), so the new bays continue the row's spacing and perspective. The step
+    must run along the row (EXTEND_OFF_ROW_DEG): two bays of different rows, or an odd edited one, never set the direction.
     in_picture: the bays were laid from the zone's cars (car_row_grid): continue them in the picture (_extend_in_picture), not in metres.
-    A bay that would lie wholly outside the picture is not added. -> (the zone's bays with the new ones, how many were added)."""
+    A bay that would lie wholly outside the picture, or on a bay the zone already has, ends the extension; `note`, when given, receives why.
+    -> (the zone's bays with the new ones, how many were added)."""
     from carparking.geometry.camera import to_ground
     cam = ground_camera(record, w, h)
     if cam is None:
         raise SessionError("this zone has no usable calibration: calibrate it again")
-    ordered = order_along_row(slots, outline, w, h)
-    if not ordered:
+    rows = rows_along_row(slots, outline, w, h)
+    if not rows:
         raise SessionError("this zone has no bay to continue from")
+    row = rows[-1]  # (the last-named row, the one nearest the camera: the bays are continued along it, never from a bay of another row)
     if in_picture:
-        tiles = _extend_in_picture(ordered, count, w, h)
-        return _add_bays(slots, ordered, [t / (w, h) for t in tiles], outline, zone, w, h)
-    ground = [to_ground(cam, np.asarray(x["poly"], float) * (w, h)) for x in ordered]
+        tiles = _extend_in_picture(row, count, w, h)
+        return _add_bays(slots, row, [t / (w, h) for t in tiles], outline, zone, w, h, note)
+    ground = [to_ground(cam, np.asarray(x["poly"], float) * (w, h)) for x in row]
     last = ground[-1]
     if not np.isfinite(last).all():
         raise SessionError("the zone's last bay cannot be placed on the ground")
+    u, _ = _row_axes(outline, w, h)
+    c = np.asarray(row[-1]["poly"], float).mean(axis=0) * (w, h)  # the row's direction on the ground, at the last bay
+    g = to_ground(cam, np.array([c, c + 10 * u]))
+    g_u = g[1] - g[0]
+    d = g_u / (np.linalg.norm(g_u) or 1.0) if np.isfinite(g_u).all() else None
     if len(ground) >= 2 and np.isfinite(ground[-2]).all():
         step = last.mean(axis=0) - ground[-2].mean(axis=0)
-    else:
-        u, _ = _row_axes(outline, w, h)
-        c = np.asarray(ordered[-1]["poly"], float).mean(axis=0) * (w, h)  # the row's direction on the ground, at the last bay
-        g = to_ground(cam, np.array([c, c + 10 * u]))
-        g_u = g[1] - g[0]
-        d = g_u / (np.linalg.norm(g_u) or 1.0)
+    elif d is not None:
         step = d * float(np.ptp(last @ d))
+    else:
+        raise SessionError("the zone's last bay does not give a direction to continue in: calibrate again")
     if not np.isfinite(step).all() or np.linalg.norm(step) < 0.5:
         raise SessionError("the last bays of the zone do not give a direction to continue in: remove an odd one or calibrate again")
-    return _add_bays(slots, ordered, [to_image(cam, last + k * step) / (w, h) for k in range(1, count + 1)], outline, zone, w, h)
+    if d is not None:  # the step must run along the row: the last two bays of a row that was edited by hand, or one bay behind another, do not continue it
+        off = float(np.degrees(np.arccos(np.clip(abs(step @ d) / np.linalg.norm(step), -1.0, 1.0))))
+        if off > EXTEND_OFF_ROW_DEG:
+            raise SessionError(f"the last two bays of the row do not run along it ({off:.0f} degrees off): remove an odd one or re-fit the row before adding more")
+        if step @ d < 0:  # (the row's direction is left to right in the picture; the last bay is at its end by order_along_row)
+            step = -step
+    return _add_bays(slots, row, [to_image(cam, last + k * step) / (w, h) for k in range(1, count + 1)], outline, zone, w, h, note)
 
 
-def _add_bays(slots: list[dict], ordered: list[dict], tiles, outline, zone: int, w: int, h: int) -> tuple[list[dict], int]:
-    """New bays (fractions) after a zone's bays: each gets the zone's next free id; the first one wholly outside the picture ends it. The zone's
-    bays are then named along the row again. -> (bays, how many were added)."""
+def _add_bays(slots: list[dict], ordered: list[dict], tiles, outline, zone: int, w: int, h: int, note: list[str] | None = None) -> tuple[list[dict], int]:
+    """New bays (fractions) after a zone's bays: each gets the zone's next free id; the first one wholly outside the picture, or on a bay the zone already
+    has (IoU >= ZONE_OVERLAP), ends it. The zone's bays are then named along the row again. -> (bays, how many were added); `note` gets why it stopped."""
     used = {x["id"] for x in slots}
     out, added = list(slots), 0
     for px in tiles:
         free = next((zone * 100 + n for n in range(1, MAX_ZONE_BAYS + 1) if zone * 100 + n not in used), None)
-        if free is None or not np.isfinite(px).all():
+        if free is None:
+            _say(note, f"a zone holds at most {MAX_ZONE_BAYS} bays")
+            break
+        if not np.isfinite(px).all():
+            _say(note, "the next one cannot be placed in the picture")
             break
         poly = np.clip(px, 0.0, 1.0)
         if cv2.contourArea(poly.astype(np.float32)) < 1e-4:  # wholly outside the picture (or a sliver at its edge)
+            _say(note, "the next one would lie outside the picture")
+            break
+        twin = next((x for x in out if _boxes_meet(x["poly"], poly) and _iou(x["poly"], poly, w, h) >= ZONE_OVERLAP), None)
+        if twin is not None:
+            _say(note, f"the next one would lie on {twin.get('name') or twin['id']}")
             break
         used.add(free)
         out.append({"id": free, "name": "", "poly": poly.round(4).tolist(), **({"lift": ordered[-1]["lift"]} if ordered[-1].get("lift") else {})})
@@ -747,6 +780,17 @@ def _add_bays(slots: list[dict], ordered: list[dict], tiles, outline, zone: int,
     letter = zone_letter(zone)
     renamed = order_along_row(out, outline, w, h)
     return [{**x, "name": f"{letter}{n}"} for n, x in enumerate(renamed, 1)], added
+
+
+def _say(note: list[str] | None, why: str) -> None:
+    if note is not None:
+        note.append(why)
+
+
+def _boxes_meet(a, b) -> bool:
+    """Do the bounding boxes of two polygons (fractions) overlap at all? (A cheap test before the raster IoU.)"""
+    pa, pb = np.asarray(a, float), np.asarray(b, float)
+    return bool((pa.min(axis=0) <= pb.max(axis=0)).all() and (pb.min(axis=0) <= pa.max(axis=0)).all())
 
 
 def _iou(a, b, w: int, h: int, scale: float = 0.25) -> float:

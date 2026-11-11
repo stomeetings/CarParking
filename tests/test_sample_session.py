@@ -460,3 +460,58 @@ def test_pins_are_set_apart_from_the_laid_bays_and_keep_their_names_when_the_gri
     assert moved["id"] == 107 and moved["capacity"] == 3 and len({x["id"] for x in out}) == len(out)
     assert ss.with_pins(laid, [{**pin, "id": 205}], 1)[-1]["id"] == 104  # not one of zone 1's ids: gets zone 1's next free one
     assert not ss.is_pin({"capacity": "x"}) and not ss.is_pin({})
+
+
+# ---- item 198: extend continues the last row along the row, never across rows or onto a bay -------------------------------------------------
+ROW2 = (to_image(CAM, [(-6, 10), (4, 10), (4, 20), (-6, 20)]) / (W, H)).tolist()  # two rows deep
+
+
+def two_rows(keep_front=(0,)):
+    """A calibrated two-row zone: the back row (the upper one in the picture, named first) full with 4 bays, the front row (nearest the camera, named
+    last: Add next continues it) with only the bays `keep_front` (cells 0..3)."""
+    from carparking import layout as L
+    rec = ss.rectangle_record(FRAME, [], pins=PINS, sides=(2.5, 5.0), polygon=ROW2, row_outline=ROW2)
+    cam = ss.ground_camera(rec, W, H)
+    lay = L.ZoneLayout(origin=(-6.0, 10.0), heading=0.0, width=2.5, depth=5.0, count=4, rows=2)  # ids 1-4: the front row (y 10-15), 5-8: the back row
+    slots = [s for s in lay.to_slots(cam, W, H) if s["id"] > 4 or (s["id"] - 1) in keep_front]
+    return rec, cam, ss.zone_bays(slots, 1, ROW2, W, H)[0]
+
+
+def test_add_next_continues_the_last_row_even_when_it_holds_one_bay():
+    from carparking.geometry.camera import to_ground
+    rec, cam, bays = two_rows(keep_front=(0,))
+    assert len(bays) == 5 and to_ground(cam, np.asarray(bays[-1]["poly"]) * (W, H)).mean(axis=0) == pytest.approx([-4.75, 12.5], abs=0.15)  # A5 is the front row's only bay
+    note = []
+    more, added = ss.extend_zone(rec, bays, ROW2, 1, 2, W, H, note=note)  # (before: the step was A5 - A4, a diagonal across the rows)
+    assert added == 2 and note == []
+    new = [to_ground(cam, np.asarray(b["poly"]) * (W, H)).mean(axis=0) for b in more[-2:]]
+    assert new[0] == pytest.approx([-2.25, 12.5], abs=0.15) and new[1] == pytest.approx([0.25, 12.5], abs=0.15)  # cells 1 and 2 of the FRONT row
+    assert [b["name"] for b in more] == [f"A{n}" for n in range(1, 8)]
+
+
+def test_add_next_refuses_a_step_that_does_not_run_along_the_row():
+    rec, cam, bays = two_rows(keep_front=(0, 1))
+    odd = dict(bays[-1])  # the front row's second bay dragged a good way back (still in its row): the last two bays no longer run along the row
+    hgt = float(np.ptp(np.asarray(odd["poly"])[:, 1]))
+    odd["poly"] = [[x, y - 0.25 * hgt] for x, y in odd["poly"]]  # (about 1.3 m across for 2.5 m along: 30 degrees off the row)
+    with pytest.raises(ss.SessionError, match="do not run along it"):
+        ss.extend_zone(rec, [*bays[:-1], odd], ROW2, 1, 1, W, H)
+
+
+def test_add_next_stops_before_a_bay_the_zone_already_has_and_says_which():
+    rec, cam, bays = two_rows(keep_front=(0, 1, 2, 3))
+    note = []
+    tiles = [np.asarray(bays[2]["poly"], float)]  # the next tile lies exactly on A3
+    out, added = ss._add_bays(bays, bays, tiles, ROW2, 1, W, H, note)
+    assert added == 0 and len(out) == len(bays) and note == ["the next one would lie on A3"]
+    shifted = [np.asarray(bays[2]["poly"], float) + (0.004, 0.0)]  # a hair off: still the same bay
+    assert ss._add_bays(bays, bays, shifted, ROW2, 1, W, H)[1] == 0
+
+
+def test_bays_continued_in_the_picture_never_run_away_in_size():
+    sq = lambda x, wd: [[x, 0.5], [x + wd, 0.5], [x + wd, 0.6], [x, 0.6]]  # noqa: E731
+    ordered = [{"id": 101, "name": "A1", "poly": sq(0.10, 0.040)}, {"id": 102, "name": "A2", "poly": sq(0.14, 0.046)}]  # each 15 % wider than the last
+    tiles = ss._extend_in_picture(ordered, 50, W, H)
+    widths = [float(t[1][0] - t[0][0]) for t in tiles]
+    assert widths[0] == pytest.approx(0.046 * 1.15 * W, rel=1e-6) and max(widths) <= 0.046 * W * ss.EXTEND_GROWTH[1] * (1 + 1e-9)
+    assert all(b >= a - 1e-9 for a, b in zip(widths, widths[1:]))  # grows, then holds

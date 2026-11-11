@@ -10,8 +10,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from carparking.geometry.camera import to_ground, to_image
-from carparking.layout import CORNERS, MAX_STALL_DEG, MIN_STALL_DEG, LayoutError, ZoneLayout, lean_of
+from carparking.geometry.camera import to_ground
+from carparking.layout import CORNERS, MAX_STALL_DEG, MIN_STALL_DEG, LayoutError, ZoneLayout, lean_of, project_bays
 
 
 @dataclass
@@ -51,6 +51,18 @@ def _pairs(dots: list[Dot], dot_at: str) -> list[tuple[int, int]]:
     return out
 
 
+TWIN_M = 0.05  # two dots within this on the ground are one click: a second one would make the dots' direction (an SVD) arbitrary
+
+
+def _merge_twins(dots: list[Dot], g: np.ndarray) -> tuple[list[Dot], np.ndarray, int]:
+    """Dots on the same ground spot as an earlier one (within TWIN_M) are left out (the first keeps its typed line and place). -> (dots, their ground points, how many went)."""
+    keep: list[int] = []
+    for i in range(len(dots)):
+        if all(float(np.linalg.norm(g[i] - g[j])) > TWIN_M for j in keep):
+            keep.append(i)
+    return [dots[i] for i in keep], g[keep], len(dots) - len(keep)
+
+
 def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: float | None = None, depth: float = 5.0, gap: float = 0.0, rows: int = 1,
                      row_gap: float = 0.0, dot_at: str = "front", heading: float | None = None, flip: bool = False, outline_px=None,
                      fit_zone: bool = False, stall_angle: float | None = None) -> tuple[ZoneLayout, dict]:
@@ -80,10 +92,13 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
     g = to_ground(cam, np.array([dd.px for dd in dots], float) * (w, h))
     if not np.isfinite(g).all():
         raise LayoutError("a dot is not on measurable ground (above the horizon?)")
+    warnings: list[str] = []
+    dots, g, twins = _merge_twins(dots, g)
+    if twins:
+        warnings.append(f"{twins} dot(s) on the same spot as an earlier one were taken as that one")
     ext = _zone_extent(cam, outline_px, w, h)
     d_out = _long_edge(ext) if ext is not None else None
     nominal = float(np.ptp(ext @ d_out)) / int(count) if ext is not None else None
-    warnings: list[str] = []
     vs = np.array([{"front": 0.0, "mid": depth / 2, "back": depth}[dd.at or dot_at] for dd in dots])
     pairs = _pairs(dots, dot_at)
     typed_cot = None
@@ -229,6 +244,8 @@ def layout_from_dots(cam, dots: list[Dot], count: int, w: int, h: int, width: fl
             warnings.append("the dots are closer than one bay: they set the start and direction, the bay size is the distance from Dot 1 to the zone's far end over the expected count")
     if step <= 0.3:
         raise LayoutError("the dots give bays narrower than 0.3 m: check their order or line numbers")
+    if step - gap < 0.3:  # (the bay is the step less the gap: a gap near the step would leave nothing, or turn the bays inside out)
+        raise LayoutError(f"the gap of {gap:g} m leaves bays narrower than 0.3 m in a step of {step:.2f} m: lower the gap or the count")
     resid = 0.0 if guide_only else float(np.sqrt(np.mean([(u[i] - (u0 + k * step)) ** 2 for i, k in zip(keep, ks)])))
     n = np.array([-d[1], d[0]]) * (-1.0 if flip else 1.0)
     v_of = {"front": 0.0, "mid": depth / 2, "back": depth}
@@ -315,19 +332,18 @@ def inset_quad(quad: np.ndarray, margin: float) -> np.ndarray | None:
 def inset_slots(lay: ZoneLayout, cam, w: int, h: int, margin: float = 0.15) -> tuple[list[dict], list[str]]:
     """to_slots with every bay pulled in by `margin` metres on the ground. A bay that would collapse keeps its full shape and is named in the second return value
     (flag it for review)."""
-    from carparking.geometry_live import VEHICLE_HALF
-    out, kept_full = [], []
-    for i, gq in enumerate(lay.bays_ground()):
+    full = lay.bays_ground()
+    quads, kept_full = [], []
+    for i, gq in enumerate(full):
         ins = inset_quad(gq, margin)
         if ins is None:
             ins = gq
             kept_full.append(lay.names[i] if i < len(lay.names) else f"B{i + 1}")
-        px = to_image(cam, ins) / (w, h)
-        if not np.isfinite(px).all():
-            continue
-        mid = gq.mean(axis=0)
-        far = to_image(cam, np.array([mid, mid + (0.0, VEHICLE_HALF)])) / (w, h)
-        lf = float(far[0][1] - far[1][1]) if np.isfinite(far).all() else 0.0
-        out.append({"id": int(lay.ids[i]) if i < len(lay.ids) else i + 1, "name": lay.names[i] if i < len(lay.names) else f"B{i + 1}",
-                    "poly": np.clip(px, 0.0, 1.0).round(4).tolist(), "lift": round(max(lf, 0.0), 5)})
+        quads.append(ins)
+    shown = project_bays(cam, quads, w, h, lift=False)
+    lifted = project_bays(cam, full, w, h)  # (the lift is the full bay's: where a vehicle's centre stands above its near wheels does not shrink with the margin)
+    out = []
+    for i, p in enumerate(shown):
+        if p is not None:
+            out.append(lay.slot_of(i, p[0], lifted[i][1] if lifted[i] is not None else 0.0))
     return out, kept_full

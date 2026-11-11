@@ -417,3 +417,35 @@ def test_snap_leaves_slanted_bays_alone_and_says_why():
     c, t = cam(), slanted(60.0)
     lay, rep = snap_lattice(np.zeros((H, W, 3), np.uint8), t, c)
     assert lay is t and rep["snapped"] is False and "square bays only" in rep["reason"]
+
+
+# ---- item 198: safeguards ---------------------------------------------------------------------------------------------------------------------
+def test_a_gap_that_eats_the_step_is_refused_not_laid_inside_out():
+    c, t = cam(), truth()
+    dots = [X.Dot(dot_at(c, t, 0), 0), X.Dot(dot_at(c, t, 2), 2)]  # a 2.5 m step
+    with pytest.raises(L.LayoutError, match="gap"):
+        X.layout_from_dots(c, dots, 6, W, H, gap=2.4)
+    lay, _ = X.layout_from_dots(c, dots, 6, W, H, gap=0.4)
+    assert lay.width == pytest.approx(2.1, abs=0.05) and lay.gap == 0.4
+
+
+def test_two_clicks_on_one_spot_are_one_dot():
+    c, t = cam(), truth()
+    dots = [X.Dot(dot_at(c, t, 0), 0), X.Dot(dot_at(c, t, 0)), X.Dot(dot_at(c, t, 3), 3)]  # the second click lands on the first
+    lay, info = X.layout_from_dots(c, dots, 6, W, H)
+    assert any("same spot" in w for w in info["warnings"]) and info["indices"] == [0, 3]
+    assert np.allclose(lay.bays_ground()[0], t.bays_ground()[0], atol=0.08) and lay.width == pytest.approx(2.5, abs=0.04)
+    one, _ = X.layout_from_dots(c, [X.Dot(dot_at(c, t, 2), 2), X.Dot(dot_at(c, t, 2))], 6, W, H, width=2.5, heading=0.0)  # both on one spot: one dot, not a wild direction
+    assert one.heading == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_long_row_has_no_drift_and_no_overlap():
+    lay = L.ZoneLayout(origin=(-60.0, 7.0), heading=17.0, width=2.5, depth=5.0, gap=0.1, count=99, rows=3, row_gap=0.5, stall_angle=65.0)
+    cells = [lay.cell(i) for i in range(lay.total)]
+    for i in range(lay.total):
+        r, k = divmod(i, 99)
+        assert cells[i][0] == pytest.approx([k * 2.6, r * 5.5], abs=1e-12)  # placed by multiplication, not by adding up: the 99th is as exact as the first
+        if k < 98:
+            assert cells[i][1][0] == pytest.approx(cells[i + 1][0][0] - 0.1, abs=1e-12) and cells[i][2][0] == pytest.approx(cells[i + 1][3][0] - 0.1, abs=1e-12)
+    widths = [float(np.linalg.norm(q[1] - q[0])) for q in lay.bays_ground()]
+    assert max(widths) - min(widths) < 1e-9

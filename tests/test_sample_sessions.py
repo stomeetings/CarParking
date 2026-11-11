@@ -547,6 +547,8 @@ def test_a_zone_can_be_laid_again_from_a_master_bay_dots_a_margin_and_a_refit(en
         assert tilted.status_code == 200 and tilted.json()["layout"]["stall_angle"] == 60 and tilted.json()["info"]["stall_source"] == "typed", tilted.text
         assert c.post(url, headers=AUTH, json={"mode": "dots", "dots": [{"x": 0.4, "y": 0.8}, {"x": 0.5, "y": 0.8}], "count": 3, "stall_angle": 5}).status_code == 422  # outside 20-160
         assert c.post(f"/api/sample-sessions/{sid}/zones/9/layout", headers=AUTH, json={"mode": "refit"}).status_code == 404
+        for bad in ([{"x": 0.4}], [{"x": 0.4, "y": 0.5, "index": -1}], [{"x": 1.4, "y": 0.5}], [{"x": 0.4, "y": 0.5, "at": "side"}], [{"x": "a", "y": 0.5}]):
+            assert c.post(url, headers=AUTH, json={"mode": "dots", "dots": bad, "count": 3}).status_code == 422, bad  # a malformed dot is refused, not a 500
 
 
 def test_sam_for_a_zone_is_cut_to_its_outline_and_does_not_replace_the_surface(env, monkeypatch, scripted):

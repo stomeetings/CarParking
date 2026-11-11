@@ -106,3 +106,68 @@ def test_layout_from_a_drawn_row():
     assert lay.width == pytest.approx(2.5, abs=0.05) and lay.depth == pytest.approx(5.0, abs=0.1) and not lay.flip
     with pytest.raises(L.LayoutError):
         L.layout_from_row(c, front, back, 0, w=W, h=H)
+
+
+# ---- item 198: safeguards ---------------------------------------------------------------------------------------------------------------------
+def test_a_bay_wholly_outside_the_picture_is_not_a_slot_and_the_rest_are_unchanged():
+    import cv2
+    c = cam()
+    lay = L.ZoneLayout(origin=(-40.0, 7.0), heading=0.0, width=2.5, depth=5.0, count=20, rows=1)  # starts far left of the picture, runs into it
+    raw = [to_image(c, g) / (W, H) for g in lay.bays_ground()]
+    outside = [i for i, px in enumerate(raw) if np.isfinite(px).all() and cv2.contourArea(np.clip(px, 0, 1).astype(np.float32)) < 1e-4]
+    assert outside, "the test needs bays beyond the picture's edge"
+    slots = lay.to_slots(c, W, H)
+    assert all(cv2.contourArea(np.float32(s["poly"])) >= 1e-4 for s in slots)  # nothing fixed_slots.validate_slots would refuse
+    kept = [i for i in range(20) if i not in outside and np.isfinite(raw[i]).all()]
+    assert [s["name"] for s in slots] == [f"B{i + 1}" for i in kept]
+    assert [s["poly"] for s in slots] == [np.clip(raw[i], 0, 1).round(4).tolist() for i in kept]  # the same corners as a bay-by-bay projection
+
+
+def test_to_slots_projects_all_bays_at_once_to_the_same_numbers_as_one_by_one():
+    from carparking.geometry_live import VEHICLE_HALF
+    rng = np.random.default_rng(7)
+    for _ in range(12):
+        c = cam(pitch=rng.uniform(20, 55), f=rng.uniform(700, 1500), height=rng.uniform(4, 12), roll=rng.uniform(-3, 3))
+        lay = L.ZoneLayout(origin=(rng.uniform(-10, 0), rng.uniform(6, 12)), heading=rng.uniform(-30, 30), width=2.5, depth=5.0, count=7, rows=2, row_gap=1.0, stall_angle=70.0)
+        lay.set_offset(3, L.BayOffset(du=0.2, rot=3.0))
+        want = []
+        for i, g in enumerate(lay.bays_ground()):  # the former loop
+            px = to_image(c, g) / (W, H)
+            if not np.isfinite(px).all():
+                continue
+            poly = np.clip(px, 0.0, 1.0)
+            if L.poly_area(poly) < L.MIN_AREA:
+                continue
+            mid = g.mean(axis=0)
+            far = to_image(c, np.array([mid, mid + (0.0, VEHICLE_HALF)])) / (W, H)
+            lf = float(far[0][1] - far[1][1]) if np.isfinite(far).all() else 0.0
+            want.append({"id": i + 1, "name": f"B{i + 1}", "poly": poly.round(4).tolist(), "lift": round(max(lf, 0.0), 5)})
+        assert lay.to_slots(c, W, H) == want
+
+
+def test_from_dict_refuses_an_angle_that_would_make_every_corner_nan_and_bad_numbers():
+    d = base().to_dict()
+    for bad in ({**d, "stall_angle": 0.0}, {**d, "stall_angle": 180.0}, {**d, "width": 0.0}, {**d, "count": 0}, {**d, "heading": float("nan")}):
+        with pytest.raises(L.LayoutError):
+            L.ZoneLayout.from_dict(bad)
+    assert L.ZoneLayout.from_dict({**d, "stall_angle": 20.0}).stall_angle == 20.0
+
+
+def test_a_refit_with_too_small_a_count_keeps_every_bay_and_says_so():
+    lay, c = base(), cam()
+    placed = lay.to_slots(c, W, H)  # 6 bays in a row
+    fit = L.refit(placed, c, W, H, count=3)  # the page's Expected bays was wrong
+    assert fit.count == 6 and len(fit.to_slots(c, W, H)) == 6 and any("more than the 3 expected" in w for w in fit.warnings)
+    assert [fit.names[i] for i in range(6)] == [s["name"] for s in placed]
+    assert L.refit(placed, c, W, H, count=6).warnings == [] and "warnings" not in fit.to_dict()
+
+
+def test_with_params_shares_nothing_with_the_layout_it_came_from():
+    lay = base()
+    lay.ids, lay.names = [1, 2, 3, 4, 5, 6], [f"B{i}" for i in range(1, 7)]
+    lay.set_offset(1, L.BayOffset(corners=[[0, 0], [2.5, 0], [2.5, 5], [0, 5]]))
+    other = lay.with_params(count=8)
+    other.ids.append(9)
+    other.names[0] = "X"
+    other.offsets[1].corners[0][0] = 9.0
+    assert lay.ids == [1, 2, 3, 4, 5, 6] and lay.names[0] == "B1" and lay.offsets[1].corners[0][0] == 0

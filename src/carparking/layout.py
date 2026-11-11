@@ -29,10 +29,42 @@ from carparking.geometry.camera import to_ground, to_image
 CORNERS = 4
 RECT_TOL_M = 0.03  # a fitted bay within this of its lattice cell, in every corner, needs no offset
 ROT_TOL_DEG = 0.3
+MIN_AREA = 1e-4  # a projected bay smaller than this share of the picture (a sliver on its edge, a bay wholly outside) is not a slot (fixed_slots.validate_slots agrees)
 
 
 class LayoutError(ValueError):
     pass
+
+
+def poly_area(poly) -> float:
+    """Unsigned area of a polygon (shoelace), in the units of its points."""
+    p = np.asarray(poly, float).reshape(-1, 2)
+    return 0.5 * abs(float(np.sum(p[:, 0] * np.roll(p[:, 1], -1) - np.roll(p[:, 0], -1) * p[:, 1])))
+
+
+def project_bays(cam, quads: list[np.ndarray], w: int, h: int, lift: bool = True) -> list[tuple[np.ndarray, float] | None]:
+    """Ground quads (each 4 x 2 m) -> per quad (its corners as picture fractions clipped to 0..1, its lift) or None when it cannot be a slot: a corner behind the
+    camera / above the horizon, or less than MIN_AREA of the picture once clipped (wholly outside). One projection call for all corners and one for all lifts
+    (to_image is element-wise, so the numbers equal a bay-by-bay projection; the layout is re-sent on every move of the margin slider)."""
+    from carparking.geometry_live import VEHICLE_HALF
+    if not quads:
+        return []
+    q = np.asarray(quads, float).reshape(len(quads), CORNERS, 2)
+    px = (to_image(cam, q.reshape(-1, 2)) / (w, h)).reshape(len(quads), CORNERS, 2)
+    lifts = np.zeros(len(quads))
+    if lift:
+        mid = q.mean(axis=1)
+        far = (to_image(cam, np.stack([mid, mid + (0.0, VEHICLE_HALF)], axis=1).reshape(-1, 2)) / (w, h)).reshape(len(quads), 2, 2)
+        lf = far[:, 0, 1] - far[:, 1, 1]
+        lifts = np.where(np.isfinite(far).all(axis=(1, 2)), np.maximum(lf, 0.0), 0.0)
+    out: list[tuple[np.ndarray, float] | None] = []
+    for i in range(len(quads)):
+        if not np.isfinite(px[i]).all():
+            out.append(None)
+            continue
+        poly = np.clip(px[i], 0.0, 1.0)
+        out.append((poly, float(lifts[i])) if poly_area(poly) >= MIN_AREA else None)
+    return out
 
 
 @dataclass
@@ -74,6 +106,7 @@ class ZoneLayout:
     offsets: dict[int, BayOffset] = field(default_factory=dict)  # by bay index (row * count + i)
     ids: list[int] = field(default_factory=list)  # the bay ids / names to hand out, by index (default 1..n, "B<n>")
     names: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)  # what a fit had to decide for the user (refit: two bays wanted one cell ...); not stored
 
     @property
     def lean(self) -> float:
@@ -128,23 +161,16 @@ class ZoneLayout:
     def bays_ground(self) -> list[np.ndarray]:
         return [self.to_ground(self.bay_uv(i)) for i in range(self.total)]
 
+    def slot_of(self, i: int, poly: np.ndarray, lift: float) -> dict:
+        """The fixed-slot dict of bay i from its projected corners (fractions) and lift: the id / name the layout hands out by index."""
+        sid = self.ids[i] if i < len(self.ids) else i + 1
+        name = self.names[i] if i < len(self.names) else f"B{i + 1}"
+        return {"id": int(sid), "name": name, "poly": np.asarray(poly, float).round(4).tolist(), "lift": round(float(lift), 5)}
+
     def to_slots(self, cam, w: int, h: int, lift: bool = True) -> list[dict]:
-        """Fixed-slot dicts (image fractions) of every bay through `cam`. A bay with a corner behind the camera / above the horizon is left out."""
-        from carparking.geometry_live import VEHICLE_HALF
-        out = []
-        for i, g in enumerate(self.bays_ground()):
-            px = to_image(cam, g) / (w, h)
-            if not np.isfinite(px).all():
-                continue
-            lf = 0.0
-            if lift:
-                mid = g.mean(axis=0)
-                far = to_image(cam, np.array([mid, mid + (0.0, VEHICLE_HALF)])) / (w, h)
-                lf = float(far[0][1] - far[1][1]) if np.isfinite(far).all() else 0.0
-            sid = self.ids[i] if i < len(self.ids) else i + 1
-            name = self.names[i] if i < len(self.names) else f"B{i + 1}"
-            out.append({"id": int(sid), "name": name, "poly": np.clip(px, 0.0, 1.0).round(4).tolist(), "lift": round(max(lf, 0.0), 5)})
-        return out
+        """Fixed-slot dicts (image fractions) of every bay through `cam`. A bay with a corner behind the camera / above the horizon, or wholly outside the
+        picture (under MIN_AREA once clipped), is left out."""
+        return [self.slot_of(i, *p) for i, p in enumerate(project_bays(cam, self.bays_ground(), w, h, lift)) if p is not None]
 
     # ---- edits ----------------------------------------------------------------------------------------------------------------------------
     def set_offset(self, idx: int, off: BayOffset | None) -> None:
@@ -166,10 +192,11 @@ class ZoneLayout:
 
     # ---- regenerate / refit ---------------------------------------------------------------------------------------------------------------
     def with_params(self, **kw: Any) -> "ZoneLayout":
-        """A copy with new lattice parameters; the offsets of the bays that still exist stay (by index, relative to the new lattice)."""
-        d = {**self.__dict__, **kw}
+        """A copy with new lattice parameters; the offsets of the bays that still exist stay (by index, relative to the new lattice). Nothing is shared with
+        the original (its ids, names and offsets are copied)."""
+        d = {**self.__dict__, "ids": list(self.ids), "names": list(self.names), "warnings": list(self.warnings), **kw}
         out = ZoneLayout(**d)
-        out.offsets = {i: BayOffset(**{**o.__dict__}) for i, o in self.offsets.items() if i < out.total}
+        out.offsets = {i: BayOffset(**{**o.__dict__, "corners": None if o.corners is None else [list(c) for c in o.corners]}) for i, o in self.offsets.items() if i < out.total}
         return out
 
     def to_dict(self) -> dict:
@@ -181,12 +208,19 @@ class ZoneLayout:
     @classmethod
     def from_dict(cls, d: dict) -> "ZoneLayout":
         try:
-            return cls(origin=tuple(map(float, d["origin"])), heading=float(d["heading"]), flip=bool(d.get("flip", False)), width=float(d["width"]), depth=float(d["depth"]),
-                       gap=float(d.get("gap", 0.0)), count=int(d["count"]), rows=int(d.get("rows", 1)), row_gap=float(d.get("row_gap", 0.0)), stall_angle=float(d.get("stall_angle", 90.0)),
-                       offsets={int(i): BayOffset.from_dict(o) for i, o in (d.get("offsets") or {}).items()}, ids=[int(x) for x in d.get("ids", [])],
-                       names=list(d.get("names", [])))
+            lay = cls(origin=tuple(map(float, d["origin"])), heading=float(d["heading"]), flip=bool(d.get("flip", False)), width=float(d["width"]), depth=float(d["depth"]),
+                      gap=float(d.get("gap", 0.0)), count=int(d["count"]), rows=int(d.get("rows", 1)), row_gap=float(d.get("row_gap", 0.0)), stall_angle=float(d.get("stall_angle", 90.0)),
+                      offsets={int(i): BayOffset.from_dict(o) for i, o in (d.get("offsets") or {}).items()}, ids=[int(x) for x in d.get("ids", [])],
+                      names=list(d.get("names", [])))
         except (KeyError, TypeError, ValueError) as e:
             raise LayoutError(f"not a layout: {e}") from None
+        if len(lay.origin) != 2 or not all(np.isfinite([*lay.origin, lay.heading, lay.width, lay.depth, lay.gap, lay.row_gap, lay.stall_angle])):
+            raise LayoutError("not a layout: a number is missing or not finite")
+        if not MIN_STALL_DEG <= lay.stall_angle <= MAX_STALL_DEG:  # (0 or 180 would make the lean infinite: every corner NaN, every bay silently dropped)
+            raise LayoutError(f"not a layout: the bay angle is {MIN_STALL_DEG:.0f} to {MAX_STALL_DEG:.0f} degrees")
+        if lay.width <= 0 or lay.depth <= 0 or lay.count < 1 or lay.rows < 1:
+            raise LayoutError("not a layout: the bay size, count and rows must be positive")
+        return lay
 
 
 def offset_for(cell_uv: np.ndarray, quad_uv: np.ndarray) -> BayOffset:
@@ -324,12 +358,16 @@ def refit(slots: list[dict], cam, w: int, h: int, count: int | None = None) -> Z
     step = max(lay.width + lay.gap, 1e-6)
     u1 = u0 + wd  # (a bay's front-edge end along the row)
     for k, p in enumerate(per_row):
-        i, prev_end = int(np.clip(round(u0[p[0]] / step), 0, lay.count - 1)), None
+        i, prev_end = max(0, int(round(u0[p[0]] / step))), None
         for j in p:
             if prev_end is not None:  # the next cell, plus one per bay-sized empty stretch between this bay and the last (a hole, not a shift)
                 i += 1 + int(max(0.0, u0[j] - prev_end) / step + 0.25)
-            placed[(k, min(i, lay.count - 1))] = j
+            placed[(k, i)] = j  # (i only grows along a row: no two bays share a cell)
             prev_end = u1[j]
+    need = max(i for _, i in placed) + 1
+    if need > lay.count:  # a row holds more bays than the count asked for: the lattice grows rather than drop a bay the user placed
+        lay.warnings.append(f"a row has {need} bays (holes counted), more than the {lay.count} expected: the row was widened to {need}; check the expected count")
+        lay.count = need
     for (k, i), j in placed.items():
         idx = k * lay.count + i
         ids[idx], names[idx] = int(slots[j].get("id", idx + 1)), str(slots[j].get("name", f"B{idx + 1}"))
