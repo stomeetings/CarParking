@@ -171,7 +171,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
         <span className="text-xs text-muted" data-testid="draw-zoom">{Math.round(view.s * 100)} %</span>
       </div>
 
-      <div ref={outer} tabIndex={0} onKeyDown={onKey} className="relative w-full overflow-hidden bg-ink outline-none select-none focus:ring-2 focus:ring-primary/40"
+      <div ref={outer} tabIndex={0} onKeyDown={onKey} className="relative w-full overflow-hidden bg-stage outline-none select-none focus:ring-2 focus:ring-primary/40"
            style={{ aspectRatio: `${w} / ${h}` }} data-testid="draw-viewport">
         <div ref={inner} className="absolute top-0 left-0 h-full w-full" style={{ transform, transformOrigin: "0 0" }}
              data-testid="draw-inner">
@@ -207,7 +207,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
           </svg>
         </div>
         {cursor && (
-          <span className="pointer-events-none absolute right-2 bottom-2 rounded bg-ink/75 px-2 py-0.5 font-mono text-[11px] text-white" data-testid="draw-readout">
+          <span className="pointer-events-none absolute right-2 bottom-2 rounded bg-stage/75 px-2 py-0.5 font-mono text-[11px] text-white" data-testid="draw-readout">
             {Math.round(cursor[0] * w)}, {Math.round(cursor[1] * h)} px
           </span>
         )}
@@ -253,7 +253,7 @@ export function DirectSlotCanvas({ image, width, height, slots, onChange }: {
                    active={draft.length === 0} title="Edit bays: slot adjustment" />
       )}
       {problems.length > 0 && <p className="text-xs text-danger" data-testid="draw-problem">{problems[0]}</p>}
-      {note && <p className={`rounded-md px-3 py-1.5 text-xs ${note.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`} data-testid="draw-note">{note.text}</p>}
+      {note && <p className={`rounded-md px-3 py-1.5 text-xs ${note.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`} data-testid="draw-note">{note.text}</p>}
     </div>
   );
 }

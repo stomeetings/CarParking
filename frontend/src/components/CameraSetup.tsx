@@ -385,7 +385,7 @@ export function CameraSetup({ cam, cameras, onCam, tokenKey, onNeedAdmin }: {
                   {cameras.map((c) => <option key={c.id} value={c.id}>{c.display}</option>)}
                 </select>
               )} bodyClass="p-0">
-          <div className="relative w-full select-none bg-ink" style={{ aspectRatio: `${w} / ${h}` }} data-testid="setup-surface">
+          <div className="relative w-full select-none bg-stage" style={{ aspectRatio: `${w} / ${h}` }} data-testid="setup-surface">
             {still ? (
               <>
                 <img src={still.image} alt="Camera still" className="absolute inset-0 h-full w-full object-fill" draggable={false} data-testid="setup-still" />
@@ -407,7 +407,7 @@ export function CameraSetup({ cam, cameras, onCam, tokenKey, onNeedAdmin }: {
                   {[reference.a, reference.b].map((p, i) => p && <circle key={i} cx={p[0] * w} cy={p[1] * h} r={w / 140} fill="#39f" stroke="white" strokeWidth={w / 700} data-testid="reference-point" />)}
                   {step !== 5 && clicks.map((c, i) => <circle key={i} cx={c.x * w} cy={c.y * h} r={w / 150} fill={c.label ? "#2eb85c" : "#e55353"} stroke="white" strokeWidth={w / 700} data-testid="surface-click" />)}
                 </svg>
-                <span className="pointer-events-none absolute top-2 left-2 rounded bg-ink/75 px-2 py-0.5 text-[11px] text-white">Still · {w}×{h}</span>
+                <span className="pointer-events-none absolute top-2 left-2 rounded bg-stage/75 px-2 py-0.5 text-[11px] text-white">Still · {w}×{h}</span>
               </>
             ) : (
               <div className="absolute inset-0 flex items-center justify-center gap-2 p-6 text-center text-sm text-white/70" data-testid="setup-empty">

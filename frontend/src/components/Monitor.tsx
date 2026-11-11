@@ -47,7 +47,7 @@ export function MonitorBanner({ live, link, onNeedAdmin, cam }: {
     }
   };
   const tone = kind === "starting" ? "border-info/40 bg-info/10" : kind === "off" ? "border-warning/50 bg-warning/10" : "border-danger/40 bg-danger/10";
-  const icon = kind === "off" ? <Pause size={18} className="text-[#b07800]" /> : kind === "starting"
+  const icon = kind === "off" ? <Pause size={18} className="text-warning-ink" /> : kind === "starting"
     ? <Play size={18} className="text-info" /> : kind === "offline" ? <PlugZap size={18} className="text-danger" /> : <AlertTriangle size={18} className="text-danger" />;
   return (
     <div className={`flex flex-wrap items-center gap-3 rounded-lg border px-4 py-3 ${tone}`} data-testid="monitor-banner">

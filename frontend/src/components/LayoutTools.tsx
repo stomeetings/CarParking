@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Crosshair, Magnet, Copy, Sparkles, Wand2 } from "lucide-react";
+import { Crosshair, Magnet, Copy, Sparkles, Wand2, X } from "lucide-react";
 import { Sub } from "./Accordion";
-import { Button } from "./ui";
+import { Button, IconButton } from "./ui";
 
 type Pt = [number, number];
 export type DotAt = "" | "front" | "mid" | "back"; // "" = the panel's "Dots are at the" choice
@@ -155,7 +155,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
           </Button>
           {proposal && (
             <div className="text-xs" data-testid="lay-ai-result">
-              <p className="text-[#1b7a3e]" data-testid="lay-ai-note">Proposed {proposal.count} bays at {Math.round(proposal.stall_angle)}° with {proposal.dots.length} dots{proposal.model ? ` (${proposal.model})` : ""}. Check them on the picture, then press "Fit the row to the dots".</p>
+              <p className="text-success-ink" data-testid="lay-ai-note">Proposed {proposal.count} bays at {Math.round(proposal.stall_angle)}° with {proposal.dots.length} dots{proposal.model ? ` (${proposal.model})` : ""}. Check them on the picture, then press "Fit the row to the dots".</p>
               {(proposal.warnings ?? []).map((t) => <p key={t} className="text-warning">{t}</p>)}
             </div>
           )}
@@ -168,7 +168,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
           <Button variant={placing ? "primary" : "outline"} onClick={onPlace} disabled={busy} data-testid="lay-dot-mode"
                   title="Click on the painted separator lines, anywhere along the row (start, middle or end)"><Crosshair size={14} /> Place reference dots ({dots.length})</Button>
           <label className="block text-xs text-muted" title="Where on its line each dot sits: the near end, the middle or the far end">Dots are at the
-            <select className="ml-1 rounded-md border border-line bg-white px-1.5 py-1 text-sm text-ink" value={dotAt} data-testid="lay-dot-at" onChange={(e) => setDotAt(e.target.value as "front" | "mid" | "back")}>
+            <select className="ml-1 rounded-md border border-line bg-surface px-1.5 py-1 text-sm text-ink" value={dotAt} data-testid="lay-dot-at" onChange={(e) => setDotAt(e.target.value as "front" | "mid" | "back")}>
               <option value="front">front (near end)</option><option value="mid">middle</option><option value="back">back (far end)</option>
             </select>
           </label>
@@ -182,7 +182,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted" data-testid="lay-next-box">
           <span title="Dots on several slots (the first, the middle, the last) pin the whole row: choose the line, then click its dots">Next dot goes on line</span>
           <input className={field} inputMode="numeric" placeholder="auto" value={next.index} data-testid="lay-next-line" onChange={(e) => onNext({ ...next, index: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) })} />
-          <select className="rounded-md border border-line bg-white px-1.5 py-1 text-sm text-ink" value={next.at} data-testid="lay-next-place" onChange={(e) => onNext({ ...next, at: e.target.value as DotAt })}>
+          <select className="rounded-md border border-line bg-surface px-1.5 py-1 text-sm text-ink" value={next.at} data-testid="lay-next-place" onChange={(e) => onNext({ ...next, at: e.target.value as DotAt })}>
             <option value="">at the place above</option><option value="front">front</option><option value="mid">middle</option><option value="back">back</option>
           </select>
           <span>(line 0 = left of bay 1, line 1 = between bays 1 and 2, line N = right of bay N)</span>
@@ -196,11 +196,11 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
                   <input className="ml-1 w-9 rounded border border-line px-1 py-0.5 text-ink" inputMode="numeric" placeholder="auto" value={d.index} data-testid="lay-dot-index"
                          onChange={(e) => onDotIndex(i, e.target.value.replace(/[^0-9]/g, "").slice(0, 2))} />
                 </label>
-                <select className="rounded border border-line bg-white px-0.5 py-0.5 text-ink" value={d.at} data-testid="lay-dot-place" aria-label={`Dot ${i + 1} place on its line`}
+                <select className="rounded border border-line bg-surface px-0.5 py-0.5 text-ink" value={d.at} data-testid="lay-dot-place" aria-label={`Dot ${i + 1} place on its line`}
                         onChange={(e) => onDotAt(i, e.target.value as DotAt)}>
                   <option value="">as above</option><option value="front">front</option><option value="mid">middle</option><option value="back">back</option>
                 </select>
-                <button type="button" className="text-muted hover:text-danger" onClick={() => onDotRemove(i)} aria-label={`Remove dot ${i + 1}`} data-testid="lay-dot-remove">✕</button>
+                <IconButton icon={X} label={`Remove dot ${i + 1}`} size="sm" variant="danger" onClick={() => onDotRemove(i)} data-testid="lay-dot-remove" />
               </li>
             ))}
           </ul>
@@ -247,7 +247,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
           {answer.info && Object.keys(answer.info).length > 0 && (
             <p data-testid="lay-info">{Object.entries(answer.info).filter(([, v]) => typeof v === "number" || typeof v === "string").map(([k, v]) => `${k.replace(/_/g, " ")} ${v}`).join(" · ")}</p>
           )}
-          {answer.snap && <p className={answer.snap.snapped ? "text-[#1b7a3e]" : "text-warning"} data-testid="lay-snap-result">
+          {answer.snap && <p className={answer.snap.snapped ? "text-success-ink" : "text-warning"} data-testid="lay-snap-result">
             {answer.snap.snapped ? `Snapped: ${Math.round(answer.snap.support * 100)} % of the lines found, moved ${(answer.snap.du_m * 100).toFixed(0)} cm, spacing ${answer.snap.dstep_m >= 0 ? "+" : ""}${(answer.snap.dstep_m * 100).toFixed(0)} cm`
               : `Not snapped: ${answer.snap.reason}`}</p>}
           {(answer.warnings ?? []).map((t) => <p key={t} className="text-warning">{t}</p>)}

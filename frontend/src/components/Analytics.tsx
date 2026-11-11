@@ -5,7 +5,7 @@ import { usePoll } from "../hooks";
 import { bucketLabel, duration, sourceLabel } from "../lib";
 import type { Analytics, Overview, Snapshot } from "../types";
 import { MetricAnalytics } from "./MetricAnalytics";
-import { Card, Pill } from "./ui";
+import { Card, MetricCard, Pill, StatusBadge } from "./ui";
 
 const RANGES: [number, string][] = [[1, "24 h"], [7, "7 days"], [30, "30 days"], [90, "90 days"]];
 
@@ -41,20 +41,15 @@ export default function AnalyticsPage({ tokenKey, snapshot, cam }: { tokenKey: s
         <span className="mx-1 h-5 w-px bg-line" />
         <Pill active={scope === "all"} onClick={() => setScope("all")} title="Everything this camera logged, any detector or slot map">All history</Pill>
         <Pill active={scope === "current"} onClick={() => setScope("current")} title="Only the detector / slot map running now">Current slot map</Pill>
-        <span className={`ml-auto rounded-full px-2.5 py-1 text-xs font-semibold ${d?.source === "postgres" ? "bg-primary/10 text-primary" : "bg-warning/15 text-ink"}`}
-              data-testid="analytics-source">
+        <StatusBadge status={d?.source === "postgres" ? "active" : "warn"} className="ml-auto" data-testid="analytics-source">
           {sourceLabel(d?.source)}
-        </span>
+        </StatusBadge>
       </div>
       {a.error && <p className="rounded-md bg-danger/10 px-3 py-2 text-sm text-danger">Couldn't load the analytics: {a.error}</p>}
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" data-testid="kpis">
         {kpis.map(([label, value, hint]) => (
-          <div key={label} className="rounded-lg border border-line bg-white p-3 shadow-sm">
-            <div className="text-xs font-semibold tracking-wide text-muted uppercase">{label}</div>
-            <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
-            {hint && <div className="text-xs text-muted">{hint}</div>}
-          </div>
+          <MetricCard key={label} label={label} value={value} hint={hint} />
         ))}
       </div>
 

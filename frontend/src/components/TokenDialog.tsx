@@ -1,3 +1,4 @@
+import * as Dialog from "@radix-ui/react-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { KeyRound, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -73,18 +74,25 @@ export function TokenDialog({ open, kind, reason, onClose, onSaved }: {
     }
   };
 
+  // Radix Dialog: focus is trapped inside, Escape and a click on the backdrop close it, the page behind does not scroll, and the
+  // content is a role="dialog" named by its title. When there is no onClose (a token is required to go on) none of the ways out work.
+  const mustStay = (e: Event) => { if (!onClose) e.preventDefault(); };
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div className="fixed inset-0 z-50 flex items-center justify-center p-4" initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <div className="absolute inset-0 bg-ink/40" onClick={onClose} />
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose?.(); }}>
+      <AnimatePresence>
+        {open && (
+          <Dialog.Portal forceMount>
+            <Dialog.Overlay asChild forceMount>
+              <motion.div className="fixed inset-0 z-50 bg-black/40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
+            </Dialog.Overlay>
+            <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center p-4">
+          <Dialog.Content asChild forceMount aria-describedby={undefined} onEscapeKeyDown={mustStay} onPointerDownOutside={mustStay} onInteractOutside={mustStay}>
           <motion.form initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 16, opacity: 0 }}
                        onSubmit={(e) => (e.preventDefault(), save())} data-testid="token-dialog"
-                       className="relative w-full max-w-md rounded-lg border border-line bg-white p-5 shadow-xl">
+                       className="pointer-events-auto relative w-full max-w-md rounded-lg border border-line bg-surface p-5 shadow-xl">
             <div className="mb-4 flex items-center gap-2">
               <span className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-primary"><KeyRound size={18} /></span>
-              <h2 className="flex-1 text-base font-semibold">Access</h2>
+              <Dialog.Title className="flex-1 text-base font-semibold">Access</Dialog.Title>
               {onClose && (
                 <button type="button" onClick={onClose} className="rounded p-1 text-muted hover:bg-body" aria-label="Close"><X size={18} /></button>
               )}
@@ -113,8 +121,11 @@ export function TokenDialog({ open, kind, reason, onClose, onSaved }: {
               <Button type="submit" disabled={checking}>{checking ? "Checking…" : "Save"}</Button>
             </div>
           </motion.form>
-        </motion.div>
-      )}
-    </AnimatePresence>
+          </Dialog.Content>
+            </div>
+          </Dialog.Portal>
+        )}
+      </AnimatePresence>
+    </Dialog.Root>
   );
 }

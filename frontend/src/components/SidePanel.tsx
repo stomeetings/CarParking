@@ -1,14 +1,14 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDownLeft, ArrowUpRight, Ban, CircleCheck, CircleHelp, Gauge, PackageX, ParkingSquare, SquareCheck, SquareX, TriangleAlert } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Ban, CircleCheck, CircleHelp, CircleX, Gauge, PackageX, ParkingSquare, TriangleAlert, type LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { autoGridText, clock, eventInfo, eventSlot } from "../lib";
 import type { ParkingEvent, SlotFilter, SlotState, Snapshot } from "../types";
 import { Card } from "./ui";
 
-function Kpi({ label, value, icon, tone, hint, active = false, dimmed = false, onClick, testid }: {
+function Kpi({ label, value, icon: Icon, tone, hint, active = false, dimmed = false, onClick, testid }: {
   label: string;
   value: number | string;
-  icon: ReactNode;
+  icon: LucideIcon;
   tone: string;
   hint?: string;
   active?: boolean; // its filter is on
@@ -20,7 +20,7 @@ function Kpi({ label, value, icon, tone, hint, active = false, dimmed = false, o
     <>
       <div className="text-3xl leading-none font-bold tabular-nums">{value}</div>
       <div className="mt-1.5 text-sm font-medium text-white/85">{label}</div>
-      <div className="absolute -right-2 -bottom-2 text-white/20">{icon}</div>
+      <Icon className="pointer-events-none absolute top-1/2 right-3 h-11 w-11 -translate-y-1/2 text-white/25" strokeWidth={1.5} aria-hidden="true" />
     </>
   );
   const base = `relative overflow-hidden rounded-lg p-4 text-left text-white shadow-sm ${tone}`;
@@ -51,30 +51,30 @@ export function Counters({ snapshot, note, filter = null, onFilter }: {
   return (
     <div className="grid grid-cols-2 gap-3" data-testid="counters">
       {!c && note && (
-        <p className="col-span-2 rounded-md bg-white px-3 py-2 text-xs font-medium text-muted ring-1 ring-line" data-testid="counters-note">{note}</p>
+        <p className="col-span-2 rounded-md bg-surface px-3 py-2 text-xs font-medium text-muted ring-1 ring-line" data-testid="counters-note">{note}</p>
       )}
-      <Kpi label="Free" value={dash(c?.free)} tone="bg-gradient-to-br from-success to-[#1b9e4b]" icon={<SquareCheck size={64} />}
+      <Kpi label="Free" value={dash(c?.free)} tone="bg-gradient-to-br from-success to-[#1b9e4b]" icon={CircleCheck}
            onClick={pick("FREE")} active={filter === "FREE"} dimmed={filter != null && filter !== "FREE"} testid="filter-free"
            hint={onFilter ? show("FREE") : undefined} />
-      <Kpi label="Busy" value={dash(c?.busy)} tone="bg-gradient-to-br from-danger to-[#d63939]" icon={<SquareX size={64} />}
+      <Kpi label="Busy" value={dash(c?.busy)} tone="bg-gradient-to-br from-danger to-[#d63939]" icon={CircleX}
            onClick={pick("BUSY")} active={filter === "BUSY"} dimmed={filter != null && filter !== "BUSY"} testid="filter-busy"
            hint={onFilter ? show("BUSY") : c ? `${c.hidden} hidden behind other vehicles (state kept)` : undefined} />
-      <Kpi label="Total slots" value={dash(c?.slots)} tone="bg-gradient-to-br from-primary to-primary-dark" icon={<ParkingSquare size={64} />}
+      <Kpi label="Total slots" value={dash(c?.slots)} tone="bg-gradient-to-br from-primary to-primary-dark" icon={ParkingSquare}
            onClick={onFilter && (() => onFilter(null))} active={false} dimmed={false} testid="filter-all"
            hint={onFilter ? "Show all slots on the video" : undefined} />
-      <Kpi label="Unknown" value={dash(c?.unknown)} tone="bg-gradient-to-br from-warning to-[#e29e00]" icon={<CircleHelp size={64} />}
+      <Kpi label="Unknown" value={dash(c?.unknown)} tone="bg-gradient-to-br from-warning to-[#e29e00]" icon={CircleHelp}
            onClick={pick("UNKNOWN")} active={filter === "UNKNOWN"} dimmed={filter != null && filter !== "UNKNOWN"} testid="filter-unknown"
            hint={onFilter ? show("UNKNOWN") : "not confirmed yet, or a phantom / duplicate slot"} />
       {c?.blocked_objects != null && (
         <div className="col-span-2" data-testid="blocked-card">
-          <Kpi label="Blocked by object (free, not usable)" value={c.blocked_objects} tone="bg-gradient-to-br from-[#5b6475] to-[#3f4757]" icon={<PackageX size={64} />}
+          <Kpi label="Blocked by object (free, not usable)" value={c.blocked_objects} tone="bg-gradient-to-br from-[#5b6475] to-[#3f4757]" icon={Ban}
                onClick={pick("BLOCKED")} active={filter === "BLOCKED"} dimmed={filter != null && filter !== "BLOCKED"} testid="filter-blocked"
                hint={onFilter ? show("BLOCKED") : `a potted plant, vase or box stands in these free bays; the Free card counts only the usable ones (${c.available ?? c.free})`} />
         </div>
       )}
       {c?.encroached != null && (
         <div className="col-span-2" data-testid="encroached-card">
-          <Kpi label="Encroached (free, not usable)" value={c.encroached} tone="bg-gradient-to-br from-[#f08c00] to-[#c97100]" icon={<TriangleAlert size={64} />}
+          <Kpi label="Encroached (free, not usable)" value={c.encroached} tone="bg-gradient-to-br from-[#f08c00] to-[#c97100]" icon={TriangleAlert}
                onClick={pick("ENCROACHED")} active={filter === "ENCROACHED"} dimmed={filter != null && filter !== "ENCROACHED"} testid="filter-encroached"
                hint={onFilter ? show("ENCROACHED") : `a neighbour's vehicle stands on these free bays; the Free card counts only the usable ones (${c.available ?? c.free})`} />
         </div>

@@ -4,15 +4,9 @@ import { hourProfile, metricLabel, metricRows, summarize } from "../analyticsMet
 import { usePoll } from "../hooks";
 import type { HistoryResponse } from "../setupflow";
 import type { GeometryLive } from "../types";
-import { Card } from "./ui";
+import { Card, MetricCard } from "./ui";
 
-const tile = (label: string, value: string, hint?: string) => (
-  <div key={label} className="rounded-lg border border-line bg-white p-3 shadow-sm">
-    <div className="text-xs font-semibold tracking-wide text-muted uppercase">{label}</div>
-    <div className="mt-1 text-xl font-semibold tabular-nums">{value}</div>
-    {hint && <div className="text-xs text-muted">{hint}</div>}
-  </div>
-);
+const tile = (label: string, value: string, hint?: string) => <MetricCard key={label} label={label} value={value} hint={hint} />;
 const pct = (v: number | null) => (v == null ? "–" : `${v.toFixed(0)} %`);
 
 /** Phase 2 (CARPARK_GEOMETRY_ENABLED): the camera's MEASURED occupancy next to the legacy slot analytics: how full the metric bays were

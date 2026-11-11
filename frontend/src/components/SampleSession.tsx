@@ -10,7 +10,7 @@ import { CapacityField } from "./CapacityField";
 import { DirectSlotCanvas } from "./DirectSlotCanvas";
 import { Sub } from "./Accordion";
 import { type AutoProposal, type DotNext, type LayoutAnswer, type LayoutDot, type LayoutRequest, LayoutTools } from "./LayoutTools";
-import { Button, Card, Pill } from "./ui";
+import { Badge, Button, Card, CanvasFrame, IconButton, Pill } from "./ui";
 import { MAX_ZOOM, MIN_ZOOM, useZoomPan } from "./useZoomPan";
 
 /** The Sample test page. A parking picture from anywhere is its own throw-away camera: (1) the scale from a few clicks, (2) the parking surface, (3) a bay grid laid on it, which you
@@ -88,9 +88,12 @@ function DynamicToggle({ on, onChange }: { on: boolean; onChange: (v: boolean) =
 }
 
 /** A section that opens and closes. Its content stays mounted while closed (hidden), so a half-done calibration or drawing is not lost. */
+/** The colour of a calibration's confidence chip. */
+const confidenceTone = (c: string) => (c === "HIGH" ? "success" : c === "MEDIUM" ? "warning" : c === "LOW" || c === "NONE" ? "danger" : "neutral") as "success" | "warning" | "danger" | "neutral";
+
 function Fold({ id, title, open, onToggle, children }: { id: string; title: React.ReactNode; open: boolean; onToggle: () => void; children: React.ReactNode }) {
   return (
-    <section className="overflow-clip rounded-lg border border-line bg-white shadow-sm" data-testid={`fold-${id}`}>
+    <section className="overflow-clip rounded-lg border border-line bg-surface shadow-sm" data-testid={`fold-${id}`}>
       <h2 className={`px-4 py-2.5 text-sm font-semibold text-ink ${open ? "border-b border-line" : ""}`}>
         <button type="button" className="flex w-full items-center gap-2 text-left" onClick={onToggle} aria-expanded={open} data-testid={`fold-${id}-toggle`}>
           {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}{title}
@@ -594,9 +597,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                 <button type="button" className="flex-1 text-left" onClick={() => (setActiveZone(z.id), setMode("zone-outline"))} data-testid="zone-select">
                   {z.name} <span className="text-xs text-muted">· {cal ? `${cal.calibration.bays} bay(s), ${cal.calibration.confidence}` : z.outline.length < 3 ? "outline not drawn" : "not calibrated"}</span>
                 </button>
-                <button type="button" title="Delete this zone" className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger" onClick={() => void dropZone(z.id)} data-testid="zone-delete">
-                  <Trash2 size={14} />
-                </button>
+                <IconButton icon={Trash2} label="Delete this zone" size="sm" variant="danger" onClick={() => void dropZone(z.id)} data-testid="zone-delete" />
               </li>
             );
           })}
@@ -621,7 +622,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                          onChange={(e) => setZone(az.id, { expected: e.target.value.replace(/[^0-9]/g, "").slice(0, 2) })} />
                 </label>
                 <label className="block text-xs text-muted" title="Rows of bays in this zone, from its front edge (the one nearest the camera). Auto: the zone's depth over a bay's length, so a zone drawn over two cars side by side gets two rows">Rows
-                  <select className="ml-1 rounded-md border border-line bg-white px-1.5 py-1 text-sm text-ink" value={az.rows} data-testid="zone-rows"
+                  <select className="ml-1 rounded-md border border-line bg-surface px-1.5 py-1 text-sm text-ink" value={az.rows} data-testid="zone-rows"
                           onChange={(e) => setZone(az.id, { rows: Number(e.target.value) })}>
                     <option value={0}>Auto</option>
                     {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
@@ -642,7 +643,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               {job && running && <p className="text-xs text-ink" data-testid="zone-job">{job.stage} · {Math.round(job.progress * 100)} %</p>}
               {cal && (
                 <div className="space-y-1 text-xs" data-testid="zone-calibration">
-                  <p><span className="rounded bg-success/15 px-1.5 py-0.5 font-semibold text-[#1b7a3e]">{cal.calibration.confidence}</span> camera {cal.calibration.h.toFixed(1)} m up · focal {Math.round(cal.calibration.f)} px
+                  <p><Badge tone={confidenceTone(cal.calibration.confidence)}>{cal.calibration.confidence}</Badge> camera {cal.calibration.h.toFixed(1)} m up · focal {Math.round(cal.calibration.f)} px
                     {cal.calibration.hfov_deg != null ? ` · ${cal.calibration.hfov_deg}° wide` : ""} · {cal.calibration.area_m2} m² · {cal.calibration.bays} bays</p>
                   {cal.calibration.sizing && (
                     <p data-testid="zone-sizing">Bays {cal.calibration.sizing.length_m != null ? `${cal.calibration.sizing.width_m} × ${cal.calibration.sizing.length_m} m` : `about ${cal.calibration.sizing.width_m ?? "?"} m wide`} ({cal.calibration.sizing.source}) · {cal.calibration.sizing.bays_along} along the row
@@ -748,10 +749,8 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               <CapacityField value={b.capacity} onChange={(t) => setBayCapacity(b.id, t)} />
               <button type="button" className="rounded px-1.5 py-0.5 text-xs font-medium text-primary hover:bg-primary/10" data-testid="zone-bay-edit"
                       title="Select it to move it or drag its corners" onClick={() => (setActiveZone(Math.floor(b.id / 100)), setSel(b.id), setMode("edit"))}>Edit</button>
-              <button type="button" title="Remove this bay from the run" className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger" data-testid="zone-bay-delete"
-                      onClick={() => setSkip([...skip, b.id])}>
-                <Trash2 size={14} />
-              </button>
+              <IconButton icon={Trash2} label="Remove this bay from the run" size="sm" variant="danger" data-testid="zone-bay-delete"
+                          onClick={() => setSkip([...skip, b.id])} />
             </li>
           ))}
         </ul>
@@ -776,7 +775,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           for you to review, then the picture runs through the detector, spillage, obstacle filter and Blocked by object. Nothing is saved: the session lives in the
           server's memory for half an hour and no live camera is touched.
         </p>
-        <p className={`mb-3 rounded-md px-3 py-2 text-xs ${service?.service === "up" ? "bg-success/10 text-[#1b7a3e]" : "bg-warning/10 text-warning"}`} data-testid="sess-service">
+        <p className={`mb-3 rounded-md px-3 py-2 text-xs ${service?.service === "up" ? "bg-success/10 text-success-ink" : "bg-warning/10 text-warning"}`} data-testid="sess-service">
           {service == null ? "Checking the setup service…"
             : service.service === "up" ? `Setup service is running${service.loaded ? " (models loaded)" : " (the first SAM / GeoCalib request loads its models: a few minutes on a CPU)"}.`
             : <>The setup service (SAM, GeoCalib) is not running. Start it with <code>{service.command}</code>, or scale the picture with ground pins, which needs no service. </>}
@@ -786,7 +785,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           <input ref={input} type="file" accept="image/jpeg,image/png" className="hidden" data-testid="sess-file" onChange={(e) => void start({ file: e.target.files?.[0] })} />
           <Button variant="outline" onClick={() => input.current?.click()} disabled={busy}><ImageUp size={14} /> {session ? "Another picture" : "Upload a picture"}</Button>
           {samples && samples.images.length > 0 && (
-            <select className="rounded-md border border-line bg-white px-2 py-1.5 text-sm" data-testid="sess-sample" value="" disabled={busy}
+            <select className="rounded-md border border-line bg-surface px-2 py-1.5 text-sm" data-testid="sess-sample" value="" disabled={busy}
                     onChange={(e) => e.target.value && void start({ sample: e.target.value })}>
               <option value="">…or pick from {samples.folder}/</option>
               {samples.images.map((n) => <option key={n} value={n}>{n}</option>)}
@@ -818,7 +817,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               </div>
             )}
             <label className="block text-xs text-muted">YOLO model
-              <select className="mt-1 block w-full rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink" value={tune.model} data-testid="sess-model"
+              <select className="mt-1 block w-full rounded-md border border-line bg-surface px-2 py-1.5 text-sm text-ink" value={tune.model} data-testid="sess-model"
                       onChange={(e) => setTune({ ...tune, model: e.target.value })}>
                 <option value="default">This camera's own detector</option>
                 {models.filter((m) => m.id !== "default").map((m) => <option key={m.id} value={m.id}>{m.label}{m.ready ? "" : " …"}</option>)}
@@ -869,7 +868,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           )}
           <div className="flex flex-wrap items-end gap-3">
             <label className="block text-xs text-muted">Bay model
-              <select className="mt-1 block rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink" value={directModel || bayModels[0]?.id || ""} data-testid="direct-model"
+              <select className="mt-1 block rounded-md border border-line bg-surface px-2 py-1.5 text-sm text-ink" value={directModel || bayModels[0]?.id || ""} data-testid="direct-model"
                       onChange={(e) => setDirectModel(e.target.value)} disabled={bayModels.length === 0}>
                 {directModels.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
               </select>
@@ -893,7 +892,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
         <Fold id="calibrated" open={open.calibrated} onToggle={() => setOpen({ ...open, calibrated: !open.calibrated })}
               title={<span className="flex items-center gap-2"><Sparkles size={16} className="text-primary" /> GeoCalib + SAM (calibrated grid)</span>}>
         <div className="grid gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(0,1.4fr)]">
-          <Card title={<span>Picture · {w}×{h}</span>} bodyClass="p-0" className={pinned ? "sticky top-2 z-20 self-start" : ""} actions={
+          <CanvasFrame title={<span>Picture · {w}×{h}</span>} className={pinned ? "sticky top-2 z-20 self-start" : ""} actions={
             <>
               <Pill active={pinned} onClick={() => setPinned(!pinned)} title="Keep the picture in view while you scroll the controls: it stays at the top of the screen, sized to leave room for them">Keep in view</Pill>
               <Pill active={panTool} onClick={() => setPanTool(!panTool)} title="Drag the picture instead of placing points (the middle mouse button does this in every mode; the wheel zooms)"><Hand size={12} /> Pan</Pill>
@@ -986,11 +985,11 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
              </div>
             </div>
             </div>
-          </Card>
+          </CanvasFrame>
 
           <div className="space-y-4">
             <Fold id="scale" open={secs.scale ?? true} onToggle={() => flipSec("scale", true)}
-                  title={<span>1 · Scale {scaleReason() === null ? <span className="text-xs font-normal text-[#1b7a3e]">· set</span> : null}</span>}>
+                  title={<span>1 · Scale {scaleReason() === null ? <Badge tone="success" className="ml-1 font-normal">set</Badge> : null}</span>}>
               <div className="flex gap-1.5" data-testid="sess-method">
                 <Pill active={method === "geocalib"} onClick={() => (setMethod("geocalib"), setMode("ref"))} title="GeoCalib in the setup service for the lens and tilt; one typed distance for the scale">GeoCalib + distance</Pill>
                 <Pill active={method === "topdown"} onClick={() => (setMethod("topdown"), setMode("ref"))}
@@ -1022,7 +1021,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
                       <input className="ml-1 w-16 rounded-md border border-line px-1.5 py-1 text-sm text-ink" inputMode="decimal" value={refMetres} data-testid="sess-ref-metres"
                              onChange={(e) => setRefMetres(e.target.value)} />
                     </label>
-                    {method === "geocalib" && <select className="rounded-md border border-line bg-white px-2 py-1 text-sm" value={lens} onChange={(e) => setLens(e.target.value)} data-testid="sess-lens"
+                    {method === "geocalib" && <select className="rounded-md border border-line bg-surface px-2 py-1 text-sm" value={lens} onChange={(e) => setLens(e.target.value)} data-testid="sess-lens"
                             title="GeoCalib's lens model: a wide CCTV lens needs a radial one">
                       <option value="simple_radial">Lens: radial (CCTV)</option>
                       <option value="pinhole">Lens: none (pinhole)</option>

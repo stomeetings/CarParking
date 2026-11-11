@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* CoreUI "bright" look: light body, white cards with a soft border, indigo primary, the CoreUI status colours. */
 @theme {
   --color-primary: #5856d6;
@@ -12,6 +14,15 @@
   --color-line: #dbdfe6;
   --color-ink: #212631;
   --color-muted: #6b7785;
+  /* surfaces and "ink" shades of the status colours: the light-mode values equal the colours that used to be written out
+     (bg-white, text-[#1b7a3e], text-[#b07800]); a dark theme later only has to redefine these */
+  --color-surface: #ffffff;
+  --color-surface-2: #f7f8fa;
+  --color-ring: #5856d6;
+  --color-success-ink: #1b7a3e;
+  --color-warning-ink: #b07800;
+  /* the always-dark backdrop of a picture / video and the labels over it (in dark mode `ink` is light, so it cannot be used for these) */
+  --color-stage: #212631;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
@@ -35,3 +46,29 @@ input[type="range"] {
 input[type="checkbox"] {
   accent-color: var(--color-primary);
 }
+
+/* Dark "command center": the same tokens, redefined. Everything built on bg-surface / bg-body / text-ink / border-line follows. */
+.dark {
+  color-scheme: dark;
+  --color-primary: #7c7af0;
+  --color-primary-dark: #6967e0;
+  --color-info: #4aa8ff;
+  --color-success: #34c768;
+  --color-warning: #f5b70a;
+  --color-danger: #f26262;
+  --color-body: #0b0f17;
+  --color-surface: #111723;
+  --color-surface-2: #161d2b;
+  --color-line: #263044;
+  --color-ink: #e6eaf2;
+  --color-muted: #8f9bb0;
+  --color-ring: #7c7af0;
+  --color-success-ink: #4ade80;
+  --color-warning-ink: #fbbf24;
+}
+
+/* recharts draws with its own light-mode greys: follow the tokens */
+.recharts-cartesian-grid line { stroke: var(--color-line); }
+.recharts-cartesian-axis-tick-value, .recharts-legend-item-text { fill: var(--color-muted); color: var(--color-muted) !important; }
+.recharts-default-tooltip { background-color: var(--color-surface) !important; border-color: var(--color-line) !important; color: var(--color-ink); }
+.recharts-tooltip-cursor { fill: var(--color-line); fill-opacity: 0.3; }

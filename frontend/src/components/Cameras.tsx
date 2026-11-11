@@ -97,7 +97,7 @@ export function CamerasPage({ cameras, error, onChanged, onNeedAdmin, onOpen, on
         </p>
       )}
       {message && (
-        <p className={`rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`}>{message.text}</p>
+        <p className={`rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`}>{message.text}</p>
       )}
       <Card title={`Cameras (${cameras.length})`} bodyClass="p-0"
             actions={<Button onClick={() => edit()}><Plus size={14} /> Add camera</Button>}>
@@ -110,13 +110,13 @@ export function CamerasPage({ cameras, error, onChanged, onNeedAdmin, onOpen, on
                 <div className="min-w-48 flex-1">
                   <p className="flex items-center gap-2 font-semibold text-ink" data-testid={`camera-name-${cam.id}`}>
                     {cam.display}
-                    {cam.primary && <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-bold text-[#b07800]" title="Shown in Streamlit; its history continues from before"><Star size={10} /> PRIMARY</span>}
+                    {cam.primary && <span className="inline-flex items-center gap-1 rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-bold text-warning-ink" title="Shown in Streamlit; its history continues from before"><Star size={10} /> PRIMARY</span>}
                   </p>
                   <p className="font-mono text-xs text-muted">{cam.id}{cam.display !== cam.name ? ` · key “${cam.name}”` : ""} · {cam.rtsp_url}</p>
                   {(cam.metadata.location as string) && <p className="text-xs text-muted">{String(cam.metadata.location)}</p>}
                 </div>
                 <div className="w-40 text-xs">
-                  <p className={st.connected ? (st.running ? "text-success" : "text-[#b07800]") : "text-danger"}>
+                  <p className={st.connected ? (st.running ? "text-success" : "text-warning-ink") : "text-danger"}>
                     ● {st.connected ? (st.running ? "tracking" : st.enabled ? "starting" : "idle") : "worker down"}
                   </p>
                   {st.counts && st.running && <p className="text-muted">FREE {st.counts.free} · BUSY {st.counts.busy} · {st.counts.slots} slots</p>}
@@ -127,7 +127,7 @@ export function CamerasPage({ cameras, error, onChanged, onNeedAdmin, onOpen, on
                 <div className="flex overflow-hidden rounded-md border border-line text-xs font-semibold" data-testid={`mode-${cam.id}`}>
                   {(["dynamic", "fixed"] as const).map((m) => (
                     <button key={m} type="button" onClick={() => st.slot_mode !== m && settings(cam, { slot_mode: m })}
-                            className={`px-3 py-1.5 capitalize ${st.slot_mode === m ? "bg-primary text-white" : "bg-white text-muted hover:text-primary"}`}>
+                            className={`px-3 py-1.5 capitalize ${st.slot_mode === m ? "bg-primary text-white" : "bg-surface text-muted hover:text-primary"}`}>
                       {m}
                     </button>
                   ))}

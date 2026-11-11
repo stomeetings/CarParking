@@ -173,7 +173,7 @@ export function AutoGridPins({ cam, snapshot, image, tokenKey, onNeedAdmin }: {
           {!pins.length && <li className="px-3 py-4 text-center text-sm text-muted">No pins: the grid is the calibration's.</li>}
         </ul>
         {problems.length > 0 && <p className="text-xs text-danger">{problems[0]}</p>}
-        {message && <p className={`rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`}>{message.text}</p>}
+        {message && <p className={`rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`}>{message.text}</p>}
         <div className="flex flex-wrap gap-2">
           <Button onClick={save} disabled={!dirty || problems.length > 0}><Save size={14} /> Save</Button>
           <Button variant="ghost" disabled={!dirty} onClick={load}>Revert</Button>

@@ -47,7 +47,7 @@ export function SyncStatus({ at, link, every, onEvery }: { at: number | null; li
       : age >= period + 10 ? ["bg-warning", `No update for ${ago(age)}`]
         : ["bg-success", `updated ${ago(age)} ago${every ? ` · next ≤ ${Math.max(0, Math.ceil(every - age))} s` : ""}`];
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-white py-0.5 pr-2.5 pl-2 text-xs text-muted tabular-nums"
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface py-0.5 pr-2.5 pl-2 text-xs text-muted tabular-nums"
           title="Counts, slots and stats update in place (never a page reload). Routine updates come at this interval; a car parking or leaving, a slot changing state, the worker going down or a setting changing arrives at once."
           data-testid="sync-status">
       <span className={`h-2 w-2 rounded-full ${tone}`} />
@@ -55,7 +55,7 @@ export function SyncStatus({ at, link, every, onEvery }: { at: number | null; li
         <span className="sr-only">Auto-sync interval</span>
         Auto-sync
         <select value={every} onChange={(e) => onEvery(Number(e.target.value))} data-testid="sync-every"
-                className="rounded border border-line bg-white px-1 py-0.5 text-xs font-semibold text-ink">
+                className="rounded border border-line bg-surface px-1 py-0.5 text-xs font-semibold text-ink">
           {SYNC_CHOICES.map((s) => <option key={s} value={s}>{s ? `${s} s` : "live (1 s)"}</option>)}
         </select>
       </label>
@@ -79,7 +79,7 @@ export function RefreshData({ onRefresh, at }: { onRefresh: () => void; at: numb
   return (
     <button type="button" onClick={() => (setSince(Date.now()), onRefresh())} disabled={since != null}
             title="Fetch the latest counts, slots and stats now (no page reload)" data-testid="refresh-data"
-            className="inline-flex items-center gap-1 rounded-md border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-muted hover:text-primary disabled:opacity-70">
+            className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs font-semibold text-muted hover:text-primary disabled:opacity-70">
       <RefreshCw size={14} className={since != null ? "animate-spin" : ""} /> {since != null ? "Refreshing…" : "Refresh data"}
     </button>
   );

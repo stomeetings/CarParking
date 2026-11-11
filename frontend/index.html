@@ -4,6 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235856d6'/%3E%3Ctext x='16' y='23' font-family='Arial' font-weight='700' font-size='19' fill='white' text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E" />
+    <meta name="color-scheme" content="light dark" />
+    <script>
+      // before first paint: the saved theme, else the system preference (src/theme.ts does the same): no light flash in dark mode
+      (function () {
+        try {
+          var t = localStorage.getItem("carparking.theme");
+          if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          if (t === "dark") document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
     <title>Smart Parking</title>
   </head>
   <body>

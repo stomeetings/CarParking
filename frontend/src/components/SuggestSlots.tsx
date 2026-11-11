@@ -372,7 +372,7 @@ export function SuggestSlots({ camId, cam, snapshot, image, stillId, tokenKey, o
             {block && <p className="text-xs text-muted" data-testid="suggest-block">{block}</p>}
           </>
         )}
-        {message && <p className={`rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`} data-testid="suggest-message">{message.text}</p>}
+        {message && <p className={`rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`} data-testid="suggest-message">{message.text}</p>}
       </div>
     </Card>
   );

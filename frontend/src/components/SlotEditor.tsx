@@ -8,7 +8,7 @@ import type { CameraInfo, SettingsResponse, SlotState, Snapshot, StateMessage } 
 import { AutoGridPins } from "./AutoGridPins";
 import { SuggestSlots } from "./SuggestSlots";
 import { BayAdjust, useBayHistory } from "./BayAdjust";
-import { Button, Card, Pill, inputClass } from "./ui";
+import { Button, Card, CanvasFrame, IconButton, Pill, inputClass } from "./ui";
 
 type Mode = "polygon" | "rect" | "edit";
 type Drag = { kind: "vertex"; id: number; index: number } | { kind: "slot"; id: number; last: Pt } | { kind: "rect"; start: Pt };
@@ -303,7 +303,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
 
   return (
     <div className="grid gap-4 xl:grid-cols-10">
-      <Card className="xl:col-span-7" bodyClass="p-0"
+      <CanvasFrame className="xl:col-span-7"
             title={locked ? "Slot map · read-only (Dynamic mode)" : "Fixed coordinates drawing tool"}
             actions={
               <>
@@ -331,7 +331,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
                 </Button>
               </>
             }>
-        <div ref={box} className="relative w-full select-none bg-ink" style={{ aspectRatio: `${w} / ${h}` }} data-testid="draw-surface">
+        <div ref={box} className="relative w-full select-none bg-stage" style={{ aspectRatio: `${w} / ${h}` }} data-testid="draw-surface">
           {preview?.image ? (
             <img src={preview.image} alt="The frame that was tested" className="absolute inset-0 h-full w-full object-fill"
                  draggable={false} data-testid="preview-image" />
@@ -432,7 +432,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
           </svg>
           {preview && (
             <div className="absolute inset-x-0 top-0 flex justify-center p-3">
-              <div className="flex max-w-2xl flex-wrap items-center gap-2 rounded-md bg-ink/85 px-3 py-2 text-sm text-white shadow" data-testid="preview-banner">
+              <div className="flex max-w-2xl flex-wrap items-center gap-2 rounded-md bg-stage/85 px-3 py-2 text-sm text-white shadow" data-testid="preview-banner">
                 <FlaskConical size={15} className="shrink-0 text-warning" />
                 <span className="font-semibold">Preview mode – active</span>
                 <span className="text-white/80">
@@ -449,22 +449,22 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
           )}
           {locked && (
             <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center p-3">
-              <p className="flex max-w-xl items-center gap-2 rounded-md bg-ink/85 px-3 py-2 text-sm text-white shadow" data-testid="dynamic-lock">
+              <p className="flex max-w-xl items-center gap-2 rounded-md bg-stage/85 px-3 py-2 text-sm text-white shadow" data-testid="dynamic-lock">
                 <Lock size={15} className="shrink-0 text-warning" /> {lockText}
               </p>
             </div>
           )}
           {cursor && (
-            <span className="pointer-events-none absolute right-2 bottom-2 rounded bg-ink/75 px-2 py-0.5 font-mono text-[11px] text-white"
+            <span className="pointer-events-none absolute right-2 bottom-2 rounded bg-stage/75 px-2 py-0.5 font-mono text-[11px] text-white"
                   data-testid="cursor-readout">
               x {cursor[0].toFixed(4)} · y {cursor[1].toFixed(4)} · {Math.round(cursor[0] * w)}, {Math.round(cursor[1] * h)} px
             </span>
           )}
           {background === "video" && status !== "playing" && (
-            <span className="absolute top-2 left-2 rounded bg-ink/75 px-2 py-0.5 text-[11px] text-white">Video: {status}</span>
+            <span className="absolute top-2 left-2 rounded bg-stage/75 px-2 py-0.5 text-[11px] text-white">Video: {status}</span>
           )}
           {background === "frame" && still && !preview && (
-            <span className="pointer-events-none absolute top-2 left-2 rounded bg-ink/75 px-2 py-0.5 text-[11px] text-white" data-testid="still-info">
+            <span className="pointer-events-none absolute top-2 left-2 rounded bg-stage/75 px-2 py-0.5 text-[11px] text-white" data-testid="still-info">
               {stillState === "loading" ? "Refreshing snapshot…" : `Snapshot ${stillTime} · ${STILL_SOURCE[still.source]}`}
             </span>
           )}
@@ -489,7 +489,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
             </>
           )}
         </div>
-      </Card>
+      </CanvasFrame>
 
       <div className="space-y-4 xl:col-span-3">
         <ParkingMode tokenKey={tokenKey} live={live} onNeedAdmin={onNeedAdmin} savedVersion={saved?.updated ?? ""} cam={cam}
@@ -521,7 +521,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
             </ul>
           ) : (<>
           {saved && (
-            <p className={`mb-3 rounded-md px-3 py-2 text-xs ${saved.in_use ? "bg-success/10 text-[#1b7a3e]" : "bg-body text-muted"}`}>
+            <p className={`mb-3 rounded-md px-3 py-2 text-xs ${saved.in_use ? "bg-success/10 text-success-ink" : "bg-body text-muted"}`}>
               {saved.in_use ? "The worker runs this camera in Fixed mode: a save applies at once."
                 : "Saved maps are used when Settings › Advanced › Slot mapping mode = Fixed."}
               {saved.updated && <> Last saved {saved.updated.replace("T", " ").slice(0, 19)}.</>}
@@ -536,10 +536,8 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
                        value={s.name} onChange={(e) => setSlots((all) => all.map((x) => (x.id === s.id ? { ...x, name: e.target.value } : x)))} />
                 <CapacityField value={s.capacity} onChange={(t) => setSlots((all) => setCapacity(all, s.id, t))} />
                 <span className="text-xs text-muted">{s.poly.length} pts</span>
-                <button type="button" title="Delete" className="rounded p-1 text-muted hover:bg-danger/10 hover:text-danger"
-                        onClick={(e) => (e.stopPropagation(), history.push(), setSlots((all) => all.filter((x) => x.id !== s.id)))}>
-                  <Trash2 size={14} />
-                </button>
+                <IconButton icon={Trash2} label="Delete" size="sm" variant="danger"
+                            onClick={(e) => (e.stopPropagation(), history.push(), setSlots((all) => all.filter((x) => x.id !== s.id)))} />
               </li>
             ))}
             {!slots.length && <li className="px-3 py-4 text-center text-sm text-muted">No slots: draw one on the image.</li>}
@@ -551,7 +549,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
           )}
           </>)}
           {message && (
-            <p className={`mt-3 rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`}>{message.text}</p>
+            <p className={`mt-3 rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`}>{message.text}</p>
           )}
           {testing && (
             <p className="mt-3 rounded-md bg-body px-3 py-2 text-xs text-muted" data-testid="test-busy">
@@ -605,7 +603,7 @@ export function SlotEditor({ snapshot, tokenKey, onNeedAdmin, live, cam, cameras
               </div>
             </div>
           ) : (
-            <pre className="max-h-80 overflow-auto rounded-md bg-ink p-3 text-[11px] leading-relaxed text-white/90" data-testid="json-preview">
+            <pre className="max-h-80 overflow-auto rounded-md bg-stage p-3 text-[11px] leading-relaxed text-white/90" data-testid="json-preview">
               {pixels
                 ? JSON.stringify(JSON.parse(json).slots.map((s: { id: number; name: string; points_px: number[][] }) => ({ id: s.id, name: s.name, points_px: s.points_px })), null, 2)
                 : JSON.stringify({ camera, slots }, null, 2)}
@@ -687,7 +685,7 @@ export function ParkingMode({ tokenKey, live, onNeedAdmin, savedVersion, cam, di
   const option = (value: "dynamic" | "fixed", title: string, text: string) => (
     <button type="button" disabled={busy} onClick={() => choose(value)} data-testid={`mode-${value}`}
             className={`flex-1 rounded-md border px-3 py-2 text-left transition-colors ${mode === value
-              ? "border-primary bg-primary/10 ring-1 ring-primary" : "border-line bg-white hover:border-primary"}`}>
+              ? "border-primary bg-primary/10 ring-1 ring-primary" : "border-line bg-surface hover:border-primary"}`}>
       <span className={`block text-sm font-semibold ${mode === value ? "text-primary" : "text-ink"}`}>{title}</span>
       <span className="block text-xs text-muted">{text}</span>
     </button>
@@ -703,7 +701,7 @@ export function ParkingMode({ tokenKey, live, onNeedAdmin, savedVersion, cam, di
         {!enabled && " Monitoring is off: turn it on to see FREE / BUSY."}
       </p>
       {note && (
-        <p className={`mt-2 rounded-md px-3 py-2 text-xs ${note.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`}>{note.text}</p>
+        <p className={`mt-2 rounded-md px-3 py-2 text-xs ${note.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`}>{note.text}</p>
       )}
     </Card>
   );

@@ -6,7 +6,7 @@ import { BLOCK_HATCH, ENCROACH_HATCH, REJECT_TEXT, SLOT_COLORS, baySource, detec
 import type { BaySource, CameraInfo, Detection, Slot, SlotFilter, Snapshot } from "../types";
 import { FullscreenButton, stageStyle, useFullscreen } from "../fullscreen";
 import { MetricOverlay, useMetricsLayer } from "./Metrics";
-import { BlockHatch, Card, EncroachHatch, Pill } from "./ui";
+import { BlockHatch, CanvasFrame, EncroachHatch, Pill } from "./ui";
 
 type Hover = { x: number; y: number; title: string; lines: string[]; color: string };
 
@@ -125,9 +125,8 @@ export function LiveView({ snapshot, frameUrl, onNeedFrames, camera, onExit, tok
   };
 
   return (
-    <Card
+    <CanvasFrame
       title={<span className="flex items-center gap-2"><Radio size={16} className="text-danger" /> {title}</span>}
-      bodyClass="p-0"
       actions={
         <>
           {(Object.keys(KINDS) as Kind[]).filter((k) => streams[k]).map((k) => (
@@ -157,7 +156,7 @@ export function LiveView({ snapshot, frameUrl, onNeedFrames, camera, onExit, tok
       }
     >
       <div ref={fsBox} className={fs.active ? "flex items-center justify-center bg-black" : ""} data-testid="video-fs-box">
-      <div ref={frame} className="relative w-full bg-ink" style={stageStyle(fs.active, w, h)} onMouseLeave={() => setHover(null)}
+      <div ref={frame} className="relative w-full bg-stage" style={stageStyle(fs.active, w, h)} onMouseLeave={() => setHover(null)}
            onDoubleClick={fs.active ? fs.toggle : onExit}
            title={fs.active ? "Double-click or Esc: exit fullscreen" : onExit ? "Double-click: back to the grid" : undefined}>
         <FullscreenButton active={fs.active} onClick={fs.toggle} className="absolute top-2 right-2 z-20" />
@@ -199,14 +198,14 @@ export function LiveView({ snapshot, frameUrl, onNeedFrames, camera, onExit, tok
         </svg>
         {slotFilter != null && (
           <button type="button" onClick={onClearFilter} data-testid="filter-chip"
-                  className="absolute top-2 left-2 z-20 inline-flex items-center gap-1.5 rounded-full bg-ink/80 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-ink">
+                  className="absolute top-2 left-2 z-20 inline-flex items-center gap-1.5 rounded-full bg-stage/80 px-3 py-1 text-xs font-semibold text-white shadow hover:bg-stage">
             <span className={`h-2 w-2 rounded-full ${{ FREE: "bg-success", BUSY: "bg-danger", UNKNOWN: "bg-warning", ENCROACHED: "bg-[#f08c00]", BLOCKED: "bg-[#5b6475]" }[slotFilter]}`} />
             Showing {slotFilter} only · {slots.filter((s) => slotMatches(s, slotFilter)).length} of {slots.length}
             <span className="text-white/70">✕</span>
           </button>
         )}
         {hover && (
-          <div className="pointer-events-none absolute z-10 min-w-36 rounded-md border border-line bg-white/95 px-3 py-2 text-xs shadow-lg"
+          <div className="pointer-events-none absolute z-10 min-w-36 rounded-md border border-line bg-surface/95 px-3 py-2 text-xs shadow-lg"
                style={{ left: hover.x + 14, top: hover.y + 14, borderLeft: `3px solid ${hover.color}` }}>
             <p className="font-semibold text-ink">{hover.title}</p>
             {hover.lines.map((l) => <p key={l} className="text-muted">{l}</p>)}
@@ -216,7 +215,7 @@ export function LiveView({ snapshot, frameUrl, onNeedFrames, camera, onExit, tok
         <StreamBanner stream={snapshot?.stream} />
       </div>
       </div>
-    </Card>
+    </CanvasFrame>
   );
 }
 
@@ -325,7 +324,7 @@ function VideoChip({ status, fallback, snapshot, size }: {
         reconnecting: "Reconnecting video…" }[status];
   const dot = !fallback && status === "playing" ? "bg-success animate-pulse" : fallback ? "bg-info" : "bg-warning";
   return (
-    <span className="absolute bottom-2 left-2 inline-flex items-center gap-1.5 rounded-full bg-ink/70 px-2.5 py-1 text-[11px] font-medium text-white"
+    <span className="absolute bottom-2 left-2 inline-flex items-center gap-1.5 rounded-full bg-stage/70 px-2.5 py-1 text-[11px] font-medium text-white"
           data-testid="video-status">
       <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />
       {text}

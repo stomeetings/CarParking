@@ -153,7 +153,7 @@ export default function App() {
                 ) : (
                   <span className="text-xs font-semibold tracking-wide text-muted uppercase">View</span>
                 )}
-                <div className="flex overflow-hidden rounded-md border border-line bg-white">
+                <div className="flex overflow-hidden rounded-md border border-line bg-surface">
                   {([[1, <Square size={14} />, "1×1"], [2, <Grid2x2 size={14} />, "2×2"], [3, <Grid3x3 size={14} />, "3×3"]] as [GridSize, ReactNode, string][]).map(([g, icon, label]) => (
                     <button key={g} type="button" onClick={() => setGrid(g)} data-testid={`grid-${g}`}
                             className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold ${grid === g && !fullscreen ? "bg-primary text-white" : "text-muted hover:text-primary"}`}>
@@ -163,7 +163,7 @@ export default function App() {
                 </div>
                 {single && (
                   <button type="button" title="Browser full screen" onClick={() => document.documentElement.requestFullscreen?.().catch(() => {})}
-                          className="inline-flex items-center gap-1 rounded-md border border-line bg-white px-2.5 py-1.5 text-xs font-semibold text-muted hover:text-primary">
+                          className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2.5 py-1.5 text-xs font-semibold text-muted hover:text-primary">
                     <Expand size={14} /> Full screen
                   </button>
                 )}

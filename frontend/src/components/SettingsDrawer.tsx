@@ -1,3 +1,4 @@
+import * as Dialog from "@radix-ui/react-dialog";
 import { AnimatePresence, motion } from "framer-motion";
 import { Brain, ChevronDown, Clock, ExternalLink, FlaskConical, Gauge, RotateCcw, Save, ScanLine, ShieldCheck, SlidersHorizontal, Wrench, X } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
@@ -120,17 +121,22 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
     </Group>
   );
 
+  // Radix Dialog as a side sheet: focus trapped inside, Escape / backdrop click close it, no scrolling behind, role="dialog" named "Settings"
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div className="fixed inset-0 z-40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-          <div className="absolute inset-0 bg-ink/30" onClick={onClose} />
+    <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <AnimatePresence>
+        {open && (
+          <Dialog.Portal forceMount>
+            <Dialog.Overlay asChild forceMount>
+              <motion.div className="fixed inset-0 z-40 bg-black/30" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} />
+            </Dialog.Overlay>
+          <Dialog.Content asChild forceMount aria-describedby={undefined}>
           <motion.aside initial={{ x: 480 }} animate={{ x: 0 }} exit={{ x: 480 }} transition={{ type: "tween", duration: 0.22 }}
-                        className="absolute inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-line bg-white shadow-2xl"
+                        className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-line bg-surface shadow-2xl"
                         data-testid="settings-drawer">
             <header className="flex h-14 items-center justify-between border-b border-line px-5">
               <div>
-                <h2 className="text-base font-semibold">Settings</h2>
+                <Dialog.Title className="text-base font-semibold">Settings</Dialog.Title>
                 {server && <p className="text-xs text-muted">version {server.version}</p>}
               </div>
               <button type="button" onClick={onClose} className="rounded p-1.5 text-muted hover:bg-body" aria-label="Close"><X size={18} /></button>
@@ -436,7 +442,7 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
 
             <footer className="border-t border-line p-4">
               {message && (
-                <p className={`mb-3 rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-[#1b7a3e]" : "bg-danger/10 text-danger"}`}>
+                <p className={`mb-3 rounded-md px-3 py-2 text-sm ${message.tone === "ok" ? "bg-success/10 text-success-ink" : "bg-danger/10 text-danger"}`}>
                   {message.text}
                 </p>
               )}
@@ -449,9 +455,11 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
               </div>
             </footer>
           </motion.aside>
-        </motion.div>
-      )}
-    </AnimatePresence>
+          </Dialog.Content>
+          </Dialog.Portal>
+        )}
+      </AnimatePresence>
+    </Dialog.Root>
   );
 }
 

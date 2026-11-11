@@ -26,7 +26,7 @@ export function Pagination({ page, pages, total, size, open, onPage }: {
         {open ? <> · <span className="font-semibold text-danger">{open} parked now</span> (listed first)</> : null}
       </span>
       <div className="flex flex-wrap items-center gap-1">
-        <button type="button" className={`${btn} border-line bg-white text-ink hover:border-primary hover:text-primary`}
+        <button type="button" className={`${btn} border-line bg-surface text-ink hover:border-primary hover:text-primary`}
                 disabled={page <= 1} onClick={() => onPage(page - 1)} aria-label="Previous page">
           <ChevronLeft size={14} /> Previous
         </button>
@@ -34,11 +34,11 @@ export function Pagination({ page, pages, total, size, open, onPage }: {
           <span key={`gap${i}`} className="px-1 text-xs text-muted">…</span>
         ) : (
           <button key={p} type="button" aria-current={p === page ? "page" : undefined} onClick={() => onPage(p)}
-                  className={`${btn} ${p === page ? "border-primary bg-primary text-white" : "border-line bg-white text-ink hover:border-primary hover:text-primary"}`}>
+                  className={`${btn} ${p === page ? "border-primary bg-primary text-white" : "border-line bg-surface text-ink hover:border-primary hover:text-primary"}`}>
             {p}
           </button>
         ))}
-        <button type="button" className={`${btn} border-line bg-white text-ink hover:border-primary hover:text-primary`}
+        <button type="button" className={`${btn} border-line bg-surface text-ink hover:border-primary hover:text-primary`}
                 disabled={page >= pages} onClick={() => onPage(page + 1)} aria-label="Next page">
           Next <ChevronRight size={14} />
         </button>

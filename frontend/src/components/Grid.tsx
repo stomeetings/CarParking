@@ -96,7 +96,7 @@ export function CameraGrid({ cameras, size, page, onPage, selected, tokenKey, on
       </div>
       {pages > 1 && (
         <div className="flex flex-wrap items-center justify-center gap-3 text-sm text-muted" data-testid="grid-pager">
-          <button type="button" disabled={p === 0} onClick={() => goPage(p - 1)} className="rounded p-1 hover:bg-white disabled:opacity-40" aria-label="Previous page">
+          <button type="button" disabled={p === 0} onClick={() => goPage(p - 1)} className="rounded p-1 hover:bg-surface disabled:opacity-40" aria-label="Previous page">
             <ChevronLeft size={18} />
           </button>
           <div className="flex items-center gap-1.5">
@@ -106,12 +106,12 @@ export function CameraGrid({ cameras, size, page, onPage, selected, tokenKey, on
             ))}
           </div>
           <span className="tabular-nums">page {p + 1} / {pages}</span>
-          <button type="button" disabled={p >= pages - 1} onClick={() => goPage(p + 1)} className="rounded p-1 hover:bg-white disabled:opacity-40" aria-label="Next page">
+          <button type="button" disabled={p >= pages - 1} onClick={() => goPage(p + 1)} className="rounded p-1 hover:bg-surface disabled:opacity-40" aria-label="Next page">
             <ChevronRight size={18} />
           </button>
           <button type="button" onClick={() => setTour((t) => !t)} data-testid="grid-tour"
                   title={`Cycle the pages every ${TOUR_SECONDS} s`}
-                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold ${tour ? "border-primary bg-primary text-white" : "border-line bg-white"}`}>
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-semibold ${tour ? "border-primary bg-primary text-white" : "border-line bg-surface"}`}>
             {tour ? <Pause size={12} /> : <Play size={12} />} Tour
           </button>
         </div>
@@ -164,7 +164,7 @@ export const CameraTile = memo(function CameraTile({ camera, tokenKey, selected,
       <div data-testid={`tile-${camera.id}`} data-health={health.tone} onClick={() => onSelect(camera.id)}
            onDoubleClick={fs.active ? fs.toggle : () => onOpen(camera.id)}
            title={fs.active ? "Double-click or Esc: exit fullscreen" : "Double-click (or Enter): open this camera"}
-           className={`group relative cursor-pointer overflow-hidden bg-ink shadow-sm transition ${fs.active ? "" : `rounded-lg ring-2 ${selected ? "ring-primary shadow-lg" : "ring-transparent hover:ring-primary/40"}`}`}
+           className={`group relative cursor-pointer overflow-hidden bg-stage shadow-sm transition ${fs.active ? "" : `rounded-lg ring-2 ${selected ? "ring-primary shadow-lg" : "ring-transparent hover:ring-primary/40"}`}`}
            style={stageStyle(fs.active, w, h)}>
         <video ref={video} muted autoPlay playsInline className={`absolute inset-0 h-full w-full object-fill ${health.tone === "down" ? "opacity-50 grayscale" : ""}`} />
         {status !== "playing" && (
