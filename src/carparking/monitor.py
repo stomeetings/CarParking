@@ -1,7 +1,6 @@
 """Parking monitor service: one camera's frames -> vehicle detections -> slot map -> logged entry/exit events.
 
-No Streamlit (or any UI) code here. scripts/demo_app.py drives a ParkingMonitor from its RTSP loop and only draws and
-displays; a later FastAPI app can drive the same object from a background worker and serve, as JSON:
+No Streamlit (or any UI) code here. scripts/worker.py drives a ParkingMonitor from its RTSP loop and the FastAPI app serves, as JSON:
   * ParkingMonitor.state()          live slots and counts       (e.g. GET /cameras/{id}/state)
   * FrameResult.to_json()           what the last frame showed  (e.g. a WebSocket push per processed frame)
   * HistoryDB.sessions() / events() / summary()                 (e.g. GET /cameras/{id}/sessions, /events?since_id=)

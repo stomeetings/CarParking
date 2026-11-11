@@ -199,11 +199,11 @@ class LiveStore:
 
 
 # --- Mode 5 settings: one builder for every UI ---------------------------------------------------------------------
-# The Streamlit page (scripts/demo_app.py, kept as it is) stores {"enabled", "ui": its widget values, "run": what they
+# The (removed) Streamlit page used to store {"enabled", "ui": its widget values, "run": what they
 # mean for the worker}. build_settings() computes the same "run" from the same widget values, so any other UI (the
 # FastAPI backend) writes settings identical to the page's: the page, re-seeded from them, recomputes the same dict
-# and writes nothing, and the worker never restarts its session for a mere re-save. tests/test_settings_parity.py
-# renders the page with given widget values and compares; keep the labels and defaults below in step with it.
+# and writes nothing, and the worker never restarts its session for a mere re-save.
+# (the page and its parity test are gone: tests/test_api.py pins what the API stores).
 CHOICES = {"🤖 Auto (layout analyser)": "auto", "YOLOv8 Axis-Aligned (Baseline)": "baseline",
            "YOLO-OBB (Oriented / Advanced)": "obb"}
 STREAMS = ["Main stream (101, full resolution)", "Sub-stream (102, lower latency)", "Custom URL"]

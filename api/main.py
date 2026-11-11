@@ -2,7 +2,7 @@
 
 It never runs a detector or opens the camera: the headless worker (scripts/worker.py, carparking/live.py) does, and
 publishes its heartbeat, status, slot map, detections and images to the database; this process only reads that, and
-writes settings / requests the worker (and the Streamlit page on :8501) pick up. Settings go through
+writes settings / requests the worker picks up. Settings go through
 carparking.live.build_settings, so they are exactly what the Streamlit page stores for the same values: either UI can
 be used, and a re-save never restarts the worker's tracking.
 
@@ -1297,4 +1297,4 @@ def mount_spa(app: FastAPI, dist: Path):
         if index.is_file():  # never cached: a new build reaches every browser on the next load (the assets are hashed)
             return FileResponse(index, headers={"Cache-Control": "no-cache"})
         return HTMLResponse("<h1>Parking monitor API</h1><p>The web app is not built yet (frontend/dist). "
-                            "API docs: <a href='/docs'>/docs</a>. Streamlit: port 8501.</p>")
+                            "API docs: <a href='/docs'>/docs</a>.</p>")

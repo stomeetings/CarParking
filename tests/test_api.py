@@ -58,7 +58,7 @@ def test_settings_defaults_and_round_trip_with_page_parity(client, env):
     assert r.json()["version"] == 1 and v["hold"] == 20 and v["stream"] == "sub" and v["cut_top"] == 10
     cfg, ver = stored(env)
     assert ver == 1 and cfg["enabled"] and cfg["run"]["m5"]["top"] == 0.10 and cfg["run"]["m5"]["hold"] == 20
-    # exactly what the Streamlit page stores for these widget values (tests/test_settings_parity.py)
+    # exactly what the Streamlit page stores for these widget values
     assert build_settings(cfg["ui"], ROOT, env["CARPARK_HISTORY_DB"], URL, env["CARPARK_FIXED_SLOTS"], names_of) == cfg
     # a re-save with nothing new is no new version: the worker never restarts for it
     assert client.put("/api/settings", headers=AUTH, json={"hold": 20}).json()["version"] == 1

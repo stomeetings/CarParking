@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
-# YOLO Smart Parking: Streamlit UI + detection (CPU). Build: docker compose build  (or docker build -t carparking .)
-# One image, three roles (docker-compose.yml): the default command is the Streamlit page; `python scripts/worker.py` is
-# the background monitoring worker; `uvicorn --factory api.main:create_app` the FastAPI backend (+ React app). Run
-# alone (docker run), the page starts the worker itself (CARPARK_WORKER=embedded).
+# YOLO Smart Parking: FastAPI backend + React app + detection worker (CPU). Build: docker compose build  (or docker build -t carparking .)
+# One image, several roles (docker-compose.yml): the default command is the FastAPI backend (+ React app),
+# `uvicorn --factory api.main:create_app`; `python scripts/supervisor.py` runs the background monitoring workers
+# (one per camera; `python scripts/worker.py` is a single one).
 # Stages: web (React app: tsc, vitest, vite build) + base (dependencies + code) -> test (pytest + pyflakes) -> runtime;
 # any failing test fails the build.
 # Data (history DB, fixed slot maps, saved frames) is never in the image: mount a folder at /data.
@@ -35,9 +35,9 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt \
  && pip uninstall -y opencv-python \
  && pip install --no-deps --force-reinstall "$(grep -i '^opencv-python-headless==' requirements.txt)" \
- && python -c "import cv2, torch, ultralytics, sahi, streamlit; print('cv2', cv2.__version__, 'torch', torch.__version__)"
+ && python -c "import cv2, torch, ultralytics, sahi; print('cv2', cv2.__version__, 'torch', torch.__version__)"
 
-COPY app.py yolov8s.pt ./
+COPY yolov8s.pt ./
 COPY models/ models/
 COPY src/ src/
 COPY scripts/ scripts/
@@ -64,14 +64,13 @@ ENV CARPARK_HISTORY_DB=/data/parking_history.db \
     CARPARK_FIXED_SLOTS=/data/config/fixed_slots.json \
     CARPARK_DATASET_RAW=/data/dataset_raw \
     CARPARK_TZ=Asia/Karachi \
-    CARPARK_WORKER=embedded \
     HOME=/home/app
 RUN useradd --create-home --uid 1000 app \
  && mkdir -p /data/config /data/dataset_raw \
  && chown -R app:app /data /app
 USER app
 VOLUME ["/data"]
-EXPOSE 8501
+EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=4)"
-CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
+CMD ["uvicorn", "--factory", "api.main:create_app", "--host", "0.0.0.0", "--port", "8000"]

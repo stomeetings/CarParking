@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, Car, Cctv, ExternalLink, Eye, FileCode2, FlaskConical, History, KeyRound, LayoutDashboard, Menu, PenTool, Ruler, Settings2, ShieldCheck } from "lucide-react";
+import { BarChart3, Car, Cctv, Eye, FileCode2, FlaskConical, History, KeyRound, LayoutDashboard, Menu, PenTool, Ruler, Settings2, ShieldCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Link } from "../hooks";
 import type { AuthInfo, CameraInfo, StateMessage } from "../types";
@@ -22,7 +22,6 @@ export function Sidebar({ page, open, onNavigate, onClose }: {
   onNavigate: (p: Page) => void;
   onClose: () => void;
 }) {
-  const streamlit = `${window.location.protocol}//${window.location.hostname}:8501`;
   const body = (
     <aside className="flex h-full w-64 flex-col border-r border-line bg-white">
       <div className="flex h-14 items-center gap-2.5 border-b border-line px-5">
@@ -40,16 +39,11 @@ export function Sidebar({ page, open, onNavigate, onClose }: {
           </button>
         ))}
         <p className="px-3 pt-5 pb-1 text-[11px] font-bold tracking-wider text-muted uppercase">Tools</p>
-        <a href={streamlit} target="_blank" rel="noreferrer"
-           className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted hover:bg-body hover:text-ink">
-          <ExternalLink size={18} /> Streamlit (classic)
-        </a>
         <a href="/docs" target="_blank" rel="noreferrer"
            className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted hover:bg-body hover:text-ink">
           <FileCode2 size={18} /> API docs
         </a>
       </nav>
-      <p className="border-t border-line px-5 py-3 text-xs text-muted">The image / video test modes stay in Streamlit.</p>
     </aside>
   );
   return (

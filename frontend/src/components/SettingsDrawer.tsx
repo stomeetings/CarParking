@@ -72,7 +72,7 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
       const err = e as ApiError;
       if (err.status === 401 || err.status === 503) onNeedAdmin(err.status === 503 ? "The server has no admin token set (CARPARK_API_TOKEN): settings are read-only." : "Applying settings needs the admin token.", apply);
       else if (err.status === 409) {
-        setMessage({ tone: "error", text: "Someone changed the settings meanwhile (Streamlit or another tab). Reloaded: check and apply again." });
+        setMessage({ tone: "error", text: "Someone changed the settings meanwhile (another tab or user). Reloaded: check and apply again." });
         const keep = changes;
         const fresh = await api.get<SettingsResponse>(withCam("/api/settings", cam));
         setServer(fresh);
@@ -131,7 +131,7 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
             <header className="flex h-14 items-center justify-between border-b border-line px-5">
               <div>
                 <h2 className="text-base font-semibold">Settings</h2>
-                {server && <p className="text-xs text-muted">version {server.version} · shared with Streamlit</p>}
+                {server && <p className="text-xs text-muted">version {server.version}</p>}
               </div>
               <button type="button" onClick={onClose} className="rounded p-1.5 text-muted hover:bg-body" aria-label="Close"><X size={18} /></button>
             </header>

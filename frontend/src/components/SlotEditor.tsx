@@ -699,7 +699,7 @@ export function ParkingMode({ tokenKey, live, onNeedAdmin, savedVersion, cam, di
         {option("fixed", "Fixed", `the drawn slots (${fixedCount ?? 0} saved)`)}
       </div>
       <p className="mt-2 text-xs text-muted">
-        This camera only; each camera has its own mode. Shared with Settings{camera === "Camera 1" ? " and Streamlit" : ""}.
+        This camera only; each camera has its own mode. Shared with Settings.
         {!enabled && " Monitoring is off: turn it on to see FREE / BUSY."}
       </p>
       {note && (

@@ -4,13 +4,11 @@
 #   docker compose down              stop (data in CARPARK_DATA_DIR is kept)
 # worker: camera -> slot tracking -> entry/exit history (scripts/worker.py), independent of any browser
 # api:    FastAPI REST + WebSocket and the React app (api/main.py)            http://<host>:${CARPARK_API_PORT:-8080}
-# ui:     the Streamlit page, kept as backup / comparison / demo              http://<host>:${CARPARK_PORT:-8501}
 # go2rtc: the cameras as WebRTC video for the React app (internal; media on port 8555)
 # sync:   every camera's history SQLite -> PostgreSQL (sessions, events, camera state, occupancy; retention policy)
 # setup:  Phase 2 camera setup (SAM 2.1, GeoCalib, Depth Anything V2), ON DEMAND ONLY: docker compose --profile setup up -d setup
 # db:     PostgreSQL: the camera registry, slot coordinates, and the central history & analytics (volume "pgdata")
-# worker, api and ui share the history database in /data (settings, heartbeat, images, history): both UIs read and
-# write the same settings.
+# worker and api share the history database in /data (settings, heartbeat, images, history).
 
 x-app: &app
   build:
@@ -71,15 +69,6 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
-
-  ui:
-    <<: *app
-    environment:
-      CARPARK_WORKER: external  # the worker service runs the loop; the page never starts one itself
-    ports:
-      - "${CARPARK_PORT:-8501}:8501"
-    stop_grace_period: 10s
-    # health: the image's HEALTHCHECK (Streamlit's /_stcore/health)
 
   go2rtc:
     image: alexxit/go2rtc:1.9.14
