@@ -9,7 +9,7 @@ import { BayAdjust, useBayHistory } from "./BayAdjust";
 import { CapacityField } from "./CapacityField";
 import { DirectSlotCanvas } from "./DirectSlotCanvas";
 import { Sub } from "./Accordion";
-import { type DotNext, type LayoutAnswer, type LayoutDot, type LayoutRequest, LayoutTools } from "./LayoutTools";
+import { type AutoProposal, type DotNext, type LayoutAnswer, type LayoutDot, type LayoutRequest, LayoutTools } from "./LayoutTools";
 import { Button, Card, Pill } from "./ui";
 import { MAX_ZOOM, MIN_ZOOM, useZoomPan } from "./useZoomPan";
 
@@ -429,6 +429,29 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
     }
   };
 
+  // ask the vision model for the zone's reference dots, angle and count: the dots are placed on the picture, the form is filled by LayoutTools; nothing is laid
+  const aiPropose = async (zid: number, expected: string): Promise<AutoProposal | null> => {
+    if (!session) return null;
+    setBusy(true);
+    setMessage(null);
+    try {
+      if (!(await saveZones())) return null;
+      const n = Number(expected);
+      const r = await api.post<AutoProposal>(`${BASE}/${session.id}/zones/${zid}/auto-calibrate`, n >= 1 ? { min_count: n, max_count: n } : {});
+      if (!r.ok) {
+        setMessage(`AI calibration gave no usable proposal: ${r.reason || "the model's answer was refused"}. Place the dots by hand.`);
+        return null;
+      }
+      setLayDots((all) => [...all.filter((d) => d.zone !== zid), ...r.dots.map((d) => ({ p: [d.x, d.y] as Pt, index: String(d.index), at: d.at, zone: zid }))]);
+      return r;
+    } catch (e) {
+      fail(e, "AI calibration");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!pendingLay) return;
     if (job?.state === "error") return setPendingLay(null);
@@ -696,7 +719,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
               )}
               <LayoutTools zoneName={az.name} calibrated={!!cal} next={nextDot} onNext={setNextDot} bays={bays.filter((b) => Math.floor(b.id / 100) === az.id).length} expected={az.expected}
                            master={(() => { const b = bays.find((x) => x.id === sel && Math.floor(x.id / 100) === az.id); return b ? (b.poly as Pt[]) : null; })()}
-                           dots={layDots.filter((d) => d.zone === az.id)} placing={mode === "zone-dot"} busy={busy || running} answer={layAnswer}
+                           dots={layDots.filter((d) => d.zone === az.id)} placing={mode === "zone-dot"} busy={busy || running} answer={layAnswer} onPropose={() => aiPropose(az.id, az.expected)}
                            onPlace={() => setMode(mode === "zone-dot" ? (cal ? "edit" : "zone-outline") : "zone-dot")}
                            onDotIndex={(i, v) => setLayDots((all) => { const mine = all.filter((d) => d.zone === az.id); const target = mine[i]; return all.map((d) => (d === target ? { ...d, index: v } : d)); })}
                            onDotAt={(i, v) => setLayDots((all) => { const target = all.filter((d) => d.zone === az.id)[i]; return all.map((d) => (d === target ? { ...d, at: v } : d)); })}
@@ -966,7 +989,7 @@ export function SampleSession({ cam, tokenKey, onNeedAdmin }: {
           </Card>
 
           <div className="space-y-4">
-            <Fold id="scale" open={secs.scale ?? scaleReason() !== null} onToggle={() => flipSec("scale", scaleReason() !== null)}
+            <Fold id="scale" open={secs.scale ?? true} onToggle={() => flipSec("scale", true)}
                   title={<span>1 · Scale {scaleReason() === null ? <span className="text-xs font-normal text-[#1b7a3e]">· set</span> : null}</span>}>
               <div className="flex gap-1.5" data-testid="sess-method">
                 <Pill active={method === "geocalib"} onClick={() => (setMethod("geocalib"), setMode("ref"))} title="GeoCalib in the setup service for the lens and tilt; one typed distance for the scale">GeoCalib + distance</Pill>

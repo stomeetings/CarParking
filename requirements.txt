@@ -21,3 +21,5 @@ uvicorn[standard]==0.54.0
 httpx==0.28.1
 # camera registry in PostgreSQL (compose service "db"); without CARPARK_DATABASE_URL a cameras.json file is used
 psycopg[binary]==3.3.6
+# Vision agent (src/carparking/vision_agent/gemini.py): optional, imported only when the Gemini provider is used; needs GEMINI_API_KEY
+google-genai==2.33.0

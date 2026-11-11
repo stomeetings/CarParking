@@ -685,3 +685,89 @@ def test_a_new_session_defaults_to_the_standard_coco_detector_when_its_weights_e
         listed = c.get("/api/sample-sessions/models", headers=AUTH).json()
         assert listed["defaults"]["model"] == "yolov8s.pt" and listed["defaults"]["conf"] == 0.20
         assert new(c)["tune"] == listed["defaults"]  # a new session starts on it, no manual selection
+
+
+# ---- AI auto-calibrate (carparking/vision_agent): a proposal only, the session never changes ---------------------------------------------------
+class FakeVision:
+    """A vision agent that 'sees' the zone's own laid bays: line i = the left edge of bay i, the last line the right edge of the last bay (crop fractions)."""
+    model = "fake-vision"
+
+    def __init__(self, c, sid, box, fail=None):
+        z = c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json()["zones"][0]
+        self.box, self.slots, self.fail, self.seen = box, [b["poly"] for b in z["slots"]], fail, []
+
+    def propose(self, crop_png_path, constraints):
+        from carparking.vision_agent.base import LineEndpoint, RawVisionProposal, Visibility
+        self.seen.append((crop_png_path, dict(constraints)))
+        if self.fail:
+            raise self.fail
+        x0, y0, x1, y1 = self.box
+        to_crop = lambda p: ((p[0] - x0) / (x1 - x0), (p[1] - y0) / (y1 - y0))  # noqa: E731
+        edges = [(q[0], q[3]) for q in self.slots] + [(self.slots[-1][1], self.slots[-1][2])]
+        return RawVisionProposal(lines=[LineEndpoint(front=to_crop(f), back=to_crop(b), visible=Visibility.CLEAR) for f, b in edges], estimated_count=len(self.slots), confidence=0.9, notes="")
+
+
+def laid_zone(c, monkeypatch):
+    sid, _ = calibrated(c)
+    a, b = (to_image(test_setup_api.CAM, [(-3, 12), (2, 15)]) / (W, H)).tolist()
+    geo = {"method": "geocalib", "reference": {"a": a, "b": b, "metres": float(np.hypot(5, 3))}, "lens": "simple_radial"}
+    assert zone_cal(c, sid, 1, NEAR, expected_bays=3, **geo)["state"] == "done"  # (3 bays on this 8 m zone: realistic widths)
+    return sid
+
+
+def test_auto_calibrate_proposes_dots_angle_and_count_and_changes_nothing(env, monkeypatch, scripted):
+    from carparking import sample_session as ss
+    with app_client(env, monkeypatch) as c:
+        sid = laid_zone(c, monkeypatch)
+        before = c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json()
+        box = ss.zone_crop_box(before["zones"][0]["outline"])
+        agent = FakeVision(c, sid, box)
+        c.app.state.vision_agent_factory = lambda: agent
+        r = c.post(f"/api/sample-sessions/{sid}/zones/1/auto-calibrate", headers=AUTH, json={"rows": 1, "min_count": 3, "slot_prefix": "B"})
+        assert r.status_code == 200, r.text
+        out = r.json()
+        assert out["ok"], out
+        assert out["count"] == 3 and abs(out["stall_angle"] - 90) < 3 and out["params"]["slot_prefix"] == "B" and out["model"] == "fake-vision"
+        assert [d["at"] for d in out["dots"][:2]] == ["front", "back"] and out["dots"][0]["index"] == 0 and len(out["dots"]) == 2 + 3  # line 0 front + back, then the other lines' fronts
+        assert all(0 <= d["x"] <= 1 and 0 <= d["y"] <= 1 for d in out["dots"])
+        assert agent.seen[0][1] == {"rows": 1, "min_count": 3}  # only what the operator gave
+        assert c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json() == before  # the proposal is not applied: the form does that
+        # the answer is something the layout route accepts as it is
+        lay = c.post(f"/api/sample-sessions/{sid}/zones/1/layout", headers=AUTH, json={"mode": "dots", "count": out["count"], "stall_angle": out["stall_angle"], "depth": out["depth"],
+                                                                                    "dots": out["dots"]})
+        assert lay.status_code == 200 and len(lay.json()["zones"][0]["slots"]) == 3, lay.text
+
+
+def test_auto_calibrate_reports_why_a_proposal_was_refused_and_when_the_model_failed(env, monkeypatch, scripted):
+    from carparking import sample_session as ss
+    with app_client(env, monkeypatch) as c:
+        sid = laid_zone(c, monkeypatch)
+        box = ss.zone_crop_box(c.get(f"/api/sample-sessions/{sid}", headers=AUTH).json()["zones"][0]["outline"])
+        c.app.state.vision_agent_factory = lambda: FakeVision(c, sid, box, fail=RuntimeError("503 overloaded"))
+        out = c.post(f"/api/sample-sessions/{sid}/zones/1/auto-calibrate", headers=AUTH, json={}).json()
+        assert out["ok"] is False and len(out["attempts"]) == 2 and "503 overloaded" in out["reason"] and "params" not in out
+        assert c.post(f"/api/sample-sessions/{sid}/zones/9/auto-calibrate", headers=AUTH, json={}).status_code == 404
+        assert c.post(f"/api/sample-sessions/{sid}/zones/1/auto-calibrate", json={}).status_code in (401, 403)
+        assert c.post(f"/api/sample-sessions/{sid}/zones/1/auto-calibrate", headers=AUTH, json={"slot_prefix": "bad prefix"}).status_code == 422
+
+
+def test_auto_calibrate_without_an_api_key_says_so_and_a_zone_must_be_calibrated(env, monkeypatch, scripted):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with app_client(env, monkeypatch) as c:
+        sid = laid_zone(c, monkeypatch)
+        r = c.post(f"/api/sample-sessions/{sid}/zones/1/auto-calibrate", headers=AUTH, json={})
+        assert r.status_code == 501 and "GEMINI_API_KEY" in r.json()["detail"] and "AIza" not in r.text
+
+
+def test_the_crop_for_the_model_is_the_padded_zone_box():
+    from carparking import sample_session as ss
+    box = ss.zone_crop_box([[0.2, 0.5], [0.6, 0.5], [0.6, 0.9], [0.2, 0.9]])
+    assert box == pytest.approx((0.16, 0.46, 0.64, 0.94))
+    assert ss.zone_crop_box(None) == (0.0, 0.0, 1.0, 1.0)
+    tiny = ss.zone_crop_box([[0.5, 0.5], [0.52, 0.5], [0.52, 0.52]])
+    assert tiny[2] - tiny[0] >= ss.CROP_MIN - 1e-9 and tiny[3] - tiny[1] >= ss.CROP_MIN - 1e-9
+    edge = ss.zone_crop_box([[0.0, 0.0], [0.3, 0.0], [0.3, 0.3]])
+    assert edge[0] == 0.0 and edge[1] == 0.0
+    crop = ss.crop_for_model(np.zeros((2000, 3000, 3), np.uint8), (0.0, 0.0, 1.0, 1.0))
+    assert max(crop.shape[:2]) == ss.CROP_SIDE
+    assert ss.crop_for_model(np.zeros((200, 300, 3), np.uint8), (0.0, 0.0, 0.5, 0.5)).shape[:2] == (100, 150)

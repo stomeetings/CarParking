@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Crosshair, Magnet, Copy, Wand2 } from "lucide-react";
+import { Crosshair, Magnet, Copy, Sparkles, Wand2 } from "lucide-react";
 import { Sub } from "./Accordion";
 import { Button } from "./ui";
 
@@ -25,6 +25,18 @@ export interface LayoutRequest {
   master?: Pt[];
   master_index?: number;
 }
+/** What POST /zones/{z}/auto-calibrate answers when it worked (the vision model's proposal, checked on the ground plane; nothing is applied until the user lays the bays). */
+export interface AutoProposal {
+  ok: boolean;
+  reason?: string;
+  model?: string | null;
+  count: number;
+  stall_angle: number;
+  depth: number;
+  step_m?: number;
+  dots: { x: number; y: number; index: number; at: "front" | "mid" | "back" }[];
+  warnings?: string[];
+}
 export interface LayoutAnswer { info?: Record<string, unknown>; snap?: { snapped: boolean; support: number; matched: number; du_m: number; dstep_m: number; reason: string } | null; warnings?: string[] }
 
 const num = (s: string, fallback: number) => (s.trim() !== "" && Number.isFinite(Number(s)) ? Number(s) : fallback);
@@ -34,7 +46,7 @@ const num = (s: string, fallback: number) => (s.trim() !== "" && Number.isFinite
  * or a re-fit of the bays as they stand; with an optional setup-time snap to the painted lines and an inward margin in metres. Every action sends the whole
  * request; the margin slider re-sends the last one so the bays shrink / grow as it moves.
  */
-export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, expected, master, dots, placing, busy, answer, onPlace, onDotIndex, onDotAt, onDotRemove, onDotsClear, onApply }: {
+export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, expected, master, dots, placing, busy, answer, onPropose, onPlace, onDotIndex, onDotAt, onDotRemove, onDotsClear, onApply }: {
   zoneName: string;
   next: DotNext;
   onNext: (n: DotNext) => void;
@@ -46,6 +58,7 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
   placing: boolean;
   busy: boolean;
   answer: LayoutAnswer | null;
+  onPropose?: () => Promise<AutoProposal | null>; // ask the vision model for dots, angle and count (the page puts the dots in); undefined = not offered
   onPlace: () => void;
   onDotIndex: (i: number, v: string) => void;
   onDotAt: (i: number, v: DotAt) => void;
@@ -66,6 +79,25 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
   const [fitZone, setFitZone] = useState(false);
   const [margin, setMargin] = useState(0);
   const last = useRef<LayoutRequest | null>(null);
+  const [proposing, setProposing] = useState(false);
+  const [proposal, setProposal] = useState<AutoProposal | null>(null);
+  const propose = async () => {
+    if (!onPropose) return;
+    setProposing(true);
+    setProposal(null);
+    try {
+      const r = await onPropose();
+      if (r) { // fill the form for review: nothing is laid until "Fit the row to the dots"
+        setCount(String(r.count));
+        setAngle(String(Math.round(r.stall_angle * 10) / 10));
+        setDepth(String(Math.round(r.depth * 10) / 10));
+        setOpen((o) => ({ ...o, dots: true }));
+        setProposal(r);
+      }
+    } finally {
+      setProposing(false);
+    }
+  };
   const [open, setOpen] = useState({ dots: true, master: false, finish: false }); // the dots are the main way in; the rest is folded until needed
   const flip = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
@@ -114,6 +146,21 @@ export function LayoutTools({ zoneName, calibrated = true, next, onNext, bays, e
           <input className={field} inputMode="decimal" placeholder="auto" value={angle} data-testid="lay-angle" onChange={(e) => setAngle(e.target.value.replace(/[^0-9.]/g, "").slice(0, 5))} />
         </label>
       </div>
+
+      {onPropose && (
+        <div className="space-y-1" data-testid="lay-ai-box">
+          <Button variant="outline" onClick={() => void propose()} disabled={busy || proposing || !calibrated} data-testid="lay-ai"
+                  title={calibrated ? "A vision model reads the painted lines on this zone and proposes the reference dots, the bay angle and the count. You review them, then lay the bays." : "Calibrate the zone first"}>
+            <Sparkles size={14} /> {proposing ? "Asking the AI…" : "AI calibrate (propose dots, angle, count)"}
+          </Button>
+          {proposal && (
+            <div className="text-xs" data-testid="lay-ai-result">
+              <p className="text-[#1b7a3e]" data-testid="lay-ai-note">Proposed {proposal.count} bays at {Math.round(proposal.stall_angle)}° with {proposal.dots.length} dots{proposal.model ? ` (${proposal.model})` : ""}. Check them on the picture, then press "Fit the row to the dots".</p>
+              {(proposal.warnings ?? []).map((t) => <p key={t} className="text-warning">{t}</p>)}
+            </div>
+          )}
+        </div>
+      )}
 
       <Sub id="lay-dots" title="Reference dots" hint={`${dots.length} placed`} open={open.dots} onToggle={() => flip("dots")}>
       <div className="space-y-1.5" data-testid="lay-dots-box">

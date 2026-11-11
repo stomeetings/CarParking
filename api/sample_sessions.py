@@ -27,6 +27,7 @@ import asyncio
 import base64
 import copy
 import secrets
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -150,6 +151,16 @@ class DirectIn(BaseModel):
     conf: float = Field(0.25, ge=0.05, le=0.75)  # the bay models' own default
     iou: float = Field(0.45, ge=0.20, le=0.70)
     slots: list[dict] | None = Field(None, min_length=1, max_length=200)  # hand-drawn slots (fractions): the bay model then only says BUSY / FREE for each of them
+
+
+class AutoCalibrateIn(BaseModel):
+    """What the operator knows about the zone, for the vision model (all optional). The answer only PROPOSES a layout; nothing in the session changes."""
+    rows: int | None = Field(None, ge=1, le=6)
+    min_count: int | None = Field(None, ge=1, le=ss.MAX_ZONE_BAYS)
+    max_count: int | None = Field(None, ge=1, le=ss.MAX_ZONE_BAYS)
+    row_direction: str | None = Field(None, max_length=60)
+    notes: str | None = Field(None, max_length=300)
+    slot_prefix: str = Field("A", min_length=1, max_length=8, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class ExtendIn(BaseModel):
@@ -572,6 +583,53 @@ def register_sample_sessions(app: FastAPI, *, cfg, ctx, current, admin, root, se
         warn += list((info or {}).pop("warnings", []) or [])
         warn += [f"{n}: too thin for the {body.margin_m} m margin, kept full size" for n in kept_full]
         return {**zone_view(s), "layout": z["layout"], "info": info, "snap": report, "warnings": warn}
+
+    @app.post("/api/sample-sessions/{sid}/zones/{zone}/auto-calibrate", dependencies=admin)
+    def auto_calibrate(sid: str, zone: int, body: AutoCalibrateIn):
+        """AI proposal for the zone's layout form: a vision model (Gemini) reads the painted separator lines on a crop of the zone, Python derives the bay angle,
+        count and the first line's dots on the ground plane and checks them (carparking/vision_agent). Sample test only: NOTHING in the session or on the live
+        cameras is changed; the page fills its form from the answer and the user reviews and lays the bays as usual. 200 with ok false and the reasons when the
+        proposal was refused or the model could not be reached; 501 when no API key is configured (not 503: the page reads that as a missing admin token)."""
+        from carparking.vision_agent.gemini import ProviderConfigError
+        from carparking.vision_agent.validate import run_calibration
+        s = session_of(sid)
+        z = zone_of(s, zone)
+        cam = ss.ground_camera(z["record"], s["w"], s["h"])
+        if cam is None:
+            raise HTTPException(409, "this zone has no usable calibration: calibrate it again")
+        if s.get("vision_busy"):
+            raise HTTPException(409, "a proposal for this picture is already being made: wait for it")
+        factory = getattr(app.state, "vision_agent_factory", None)
+        try:
+            if factory is None:
+                from carparking.vision_agent.factory import make_agent
+                factory = make_agent
+            agent = factory()
+        except ProviderConfigError as e:
+            raise HTTPException(501, f"the AI calibration is not set up: {e}") from None
+        box = ss.zone_crop_box(z.get("outline") or z.get("polygon"))
+        crop = ss.crop_for_model(s["frame"], box)
+        constraints = {k: v for k, v in body.model_dump().items() if k != "slot_prefix" and v is not None}
+        s["vision_busy"] = True
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                path = str(Path(d) / "crop.png")
+                if not cv2.imwrite(path, crop):
+                    raise HTTPException(500, "could not prepare the picture for the model")
+                outcome = run_calibration(agent, path, constraints, cam, s["w"], s["h"], crop=box, slot_prefix=body.slot_prefix, outline_px=z.get("outline"))
+        finally:
+            s["vision_busy"] = False
+        attempts = [{"attempt": a.number, "errors": a.errors, "warnings": a.warnings[:6]} for a in outcome.attempts]
+        out = {"ok": outcome.ok, "model": getattr(agent, "model", None), "attempts": attempts, "reason": outcome.reason, "crop": list(box)}
+        if outcome.ok:
+            pm, info = outcome.params, outcome.info
+            f0, b0 = pm.line0_front_dot, pm.line0_back_dot
+            first = min(info["front_dots"], key=lambda t: t[2])
+            dots = [{"x": f0[0], "y": f0[1], "index": 0, "at": "front"}, {"x": b0[0], "y": b0[1], "index": 0, "at": "back"}]
+            dots += [{"x": round(x, 5), "y": round(y, 5), "index": k, "at": "front"} for x, y, k in info["front_dots"] if (x, y, k) != first]
+            out |= {"params": pm.model_dump(mode="json"), "dots": dots, "count": pm.total_slots, "stall_angle": pm.stall_angle, "depth": info["depth_m"],
+                    "step_m": info["step_m"], "measured": outcome.report.metrics, "warnings": list(dict.fromkeys([*info["warnings"], *outcome.report.warnings]))[:8]}
+        return out
 
     @app.put("/api/sample-sessions/{sid}/zones/{zone}/slots", dependencies=admin)
     def edit_zone(sid: str, zone: int, body: SlotsIn):

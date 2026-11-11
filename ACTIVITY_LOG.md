@@ -3156,3 +3156,18 @@ nearest generated bay. Snapshot to roll back to: `C:\F\Backups\CarParking\202610
 - `data/sample/freecarissue.png`: the dark car's box covers 86 % of A2, but on slanted bays its bottom centre lands in A1's polygon, so the point rule gave it to A1 and A2 stayed FREE.
 - `fixed_slots.py` `_cover_pass` (Sample test only, `cover_fallback`): a vehicle held by a slot it covers < `WEAK_COVER` (0.35) moves to a free slot whose centre is under its box and which it covers >= `COVER_MIN` (now 0.4, was 0.6). Live trackers unchanged.
 - Test: `test_cover_pass_moves_a_car_from_a_neighbour_its_foot_point_fell_into`. Not deployed.
+
+## Item 187 — Vision agent (auto-calibration proposals), steps 1-4, not wired to the API or UI
+- `src/carparking/vision_agent/`: `base.py` (strict pydantic contracts + `BaseVisionAgent`), `derive.py` (ground-plane angle / spacing / count / line-0 from the model's lines), `validate.py` (bounds, bay size, layout-engine fit, retries via `run_calibration`), `gemini.py` (`GeminiVisionAgent`, google-genai, JSON schema, key from `GEMINI_API_KEY`, backoff), `factory.py`.
+- Tests: `tests/test_vision_agent_{base,derive,validate,gemini}.py` (68, fake client, no network). Not run against the live Gemini API.
+- `requirements.txt` gains `google-genai==2.33.0` (imported lazily); the image needs a rebuild to include it. Frames sent to Gemini leave the machine: use a paid tier with a no-training policy.
+
+## Item 188 — AI calibrate on the Sample test (live Gemini check, endpoint, button)
+- Live check (`scripts/test_live_gemini.py`, key from `GEMINI_API_KEY` only): the service answered. Findings: `gemini-2.5-flash` is "no longer available to new users" (404) on this account, default is now `gemini-3.5-flash` (`GEMINI_MODEL` overrides); `maxItems` on the schema's `lines` made the API answer 400, removed (the pydantic model still caps lines); big Flash models answered 503/504 at the time, `gemini-3.5-flash-lite` returned a schema-valid reply. On `freecarissue.png` (an annotated screenshot, guessed camera) the model marked 2 lines and the proposal was refused: expected, it is a schema test, not an accuracy test.
+- derive.py: the angle now comes from the biggest group of agreeing lines (two wildly different lines gave an empty set and a NaN).
+- `POST /api/sample-sessions/{sid}/zones/{zone}/auto-calibrate` (api/sample_sessions.py): crop of the zone (`ss.zone_crop_box`, `ss.crop_for_model`) -> `run_calibration` -> dots / angle / count / depth; changes nothing in the session; 501 when no key; `app.state.vision_agent_factory` lets tests inject an agent.
+- `LayoutTools.tsx`: "AI calibrate" button fills the dots (placed on the picture), angle, count and depth for review; the user presses "Fit the row to the dots". Tests: 4 pytest + 2 vitest. Not committed, not deployed; the api image needs `google-genai` (rebuild) and `GEMINI_API_KEY` in `.env`.
+
+## Item 189 — Gemini model fallback (vision agent)
+- `vision_agent/gemini.py`: `FALLBACK_MODELS = (gemini-3.6-flash, gemini-3.8-flash, gemini-3.5-flash-lite)`. A model that is rate limited / out of quota (429), overloaded (5xx) or timed out is given up at once and the next is tried (warning "model X unavailable (...), falling back to Y..."); the last model keeps the backed-off retries; when all fail one `ProviderBusyError` lists why each failed. 400/401/403/404 and bad replies do not fall back. Same prompt/schema for every model, so the proposal the validation sees is unchanged.
+- `GEMINI_MODEL` in `.env` is now the FIRST choice and the three follow it (remove the line to get the default order); `model=` pins one model, `models=` gives a list. `agent.model` is the model that answered. 5 new tests; the test agent helper pins one model.

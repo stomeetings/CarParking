@@ -772,3 +772,39 @@ def merge_zones(zones: dict, w: int, h: int, skip=()) -> tuple[list[dict], list[
                 kept.append(s)
     # a removed bay still owns its place: its twin in another zone does not come back
     return [s for s in kept if s["id"] not in skip], dropped
+
+
+# ---- the crop the vision model is shown ------------------------------------------------------------------------------------------------------
+CROP_PAD = 0.10  # the zone's box grows by this share of its size each way: the lines at its ends are not cut off
+CROP_MIN = 0.15  # no crop narrower / shorter than this share of the picture
+CROP_SIDE = 1280  # the crop is scaled down so its long side is at most this many pixels
+
+
+def zone_crop_box(shape) -> tuple[float, float, float, float]:
+    """The zone's outline (fractions) -> its padded bounding box (x0, y0, x1, y1) in picture fractions, at least CROP_MIN wide / high; the whole picture
+    when there is no outline."""
+    if not shape:
+        return (0.0, 0.0, 1.0, 1.0)
+    xs, ys = [float(p[0]) for p in shape], [float(p[1]) for p in shape]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    px, py = max((x1 - x0) * CROP_PAD, 0.0), max((y1 - y0) * CROP_PAD, 0.0)
+    x0, x1, y0, y1 = x0 - px, x1 + px, y0 - py, y1 + py
+    if x1 - x0 < CROP_MIN:
+        c = (x0 + x1) / 2
+        x0, x1 = c - CROP_MIN / 2, c + CROP_MIN / 2
+    if y1 - y0 < CROP_MIN:
+        c = (y0 + y1) / 2
+        y0, y1 = c - CROP_MIN / 2, c + CROP_MIN / 2
+    x0, y0, x1, y1 = (min(max(v, 0.0), 1.0) for v in (x0, y0, x1, y1))
+    if x1 - x0 < 1e-3 or y1 - y0 < 1e-3:
+        return (0.0, 0.0, 1.0, 1.0)
+    return (x0, y0, x1, y1)
+
+
+def crop_for_model(frame, box):
+    """The picture cut to `box` (fractions), scaled down to CROP_SIDE on its long side (never up): what the vision model is shown."""
+    h, w = frame.shape[:2]
+    x0, y0, x1, y1 = box
+    c = frame[int(round(y0 * h)):max(int(round(y1 * h)), int(round(y0 * h)) + 1), int(round(x0 * w)):max(int(round(x1 * w)), int(round(x0 * w)) + 1)]
+    k = CROP_SIDE / max(c.shape[:2])
+    return cv2.resize(c, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k < 1 else c

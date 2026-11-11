@@ -48,7 +48,7 @@ const ZONE_MERGE = (upTo: number) => ({
 });
 
 interface Net { calls: { method: string; url: string; body?: Record<string, any> }[] }
-function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [number, string]; down?: boolean; images?: string[]; defaultModel?: string; runResult?: SampleResult } = {}): Net {
+function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [number, string]; down?: boolean; images?: string[]; defaultModel?: string; runResult?: SampleResult; ai?: "refused" | "nokey" } = {}): Net {
   const net: Net = { calls: [] };
   const queue = [...(opts.jobs ?? [])];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
@@ -72,6 +72,12 @@ function serve(opts: { jobs?: unknown[]; fail?: [number, string]; failRun?: [num
       const n = JSON.parse(String(init!.body)).count as number;
       const more = [...ZONE_BAYS(1), ...Array.from({ length: n }, (_, k) => ({ id: 103 + k, name: `A${3 + k}`, poly: sq(0.4 + 0.1 * k) }))];
       return json({ ...ZONE_MERGE(1), zones: [{ ...ZONE_MERGE(1).zones[0], slots: more }], zone_slots: more, added: n, note: null });
+    }
+    if (/\/zones\/1\/auto-calibrate$/.test(url)) {
+      if (opts.ai === "refused") return json({ ok: false, reason: "bay width 3.9 m is not a parking bay", attempts: [], model: "gemini-test" });
+      if (opts.ai === "nokey") return json({ detail: "the AI calibration is not set up: no Gemini API key: set GEMINI_API_KEY or pass api_key=" }, 501);
+      return json({ ok: true, model: "gemini-test", count: 4, stall_angle: 62.4, depth: 5.2, step_m: 2.9, warnings: ["the lines' angles spread 6 degrees"],
+                    dots: [{ x: 0.2, y: 0.8, index: 0, at: "front" }, { x: 0.25, y: 0.5, index: 0, at: "back" }, { x: 0.4, y: 0.8, index: 1, at: "front" }] });
     }
     if (/\/zones\/1\/layout$/.test(url)) {
       const b = JSON.parse(String(init!.body));
@@ -131,6 +137,21 @@ describe("starting", () => {
     expect((await screen.findByTestId("sess-service")).textContent).toContain("Setup service is running");
     await upload();
     expect(screen.getByText(/Place points \(0\/2\)/)).toBeTruthy(); // GeoCalib's two points, not pins
+  });
+
+  it("keeps the Scale section open while the distance is typed (it used to fold up on the first digit)", async () => {
+    serve();
+    show();
+    await upload();
+    expect(screen.getByTestId("fold-scale-toggle").getAttribute("aria-expanded")).toBe("true");
+    clickAt(0.2, 0.8);
+    clickAt(0.4, 0.8);
+    fireEvent.change(screen.getByTestId("sess-ref-metres"), { target: { value: "5" } }); // the scale is now complete: the section stays open
+    expect(screen.getByTestId("fold-scale-toggle").getAttribute("aria-expanded")).toBe("true");
+    fireEvent.change(screen.getByTestId("sess-ref-metres"), { target: { value: "52" } });
+    expect(screen.getByTestId("fold-scale-toggle").getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByTestId("fold-scale-toggle")); // only the user's own click folds it
+    expect(screen.getByTestId("fold-scale-toggle").getAttribute("aria-expanded")).toBe("false");
   });
 
   it("says how to start the setup service when it is down, and checks again on request", async () => {
@@ -1136,5 +1157,53 @@ describe("capacity pins (the live dashboard's manual pin with a capacity, on the
     const note = screen.getAllByTestId("sample-slot-row").find((r) => r.textContent?.includes("P1"))!;
     expect(within(note).getByTestId("sample-slot-note").textContent).toBe("2 of 3 vehicles (2 counted now)");
     expect(screen.getAllByTestId("sample-slot-row").find((r) => r.textContent?.includes("B1"))!.querySelector("[data-testid=sample-slot-note]")!.textContent).toBe("");
+  });
+});
+
+describe("AI calibrate (the vision model proposes dots, angle and count; the user lays the bays)", () => {
+  const ready = async (net: Net) => {
+    show();
+    await upload();
+    clickAt(0.2, 0.8);
+    clickAt(0.4, 0.8);
+    fireEvent.change(screen.getByTestId("sess-ref-metres"), { target: { value: "5" } });
+    fireEvent.click(screen.getByTestId("zone-draw"));
+    [[0.1, 0.9], [0.4, 0.9], [0.4, 0.4], [0.1, 0.4]].forEach(([a, b]) => clickAt(a, b));
+    fireEvent.click(screen.getByTestId("zone-calibrate"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(2), { timeout: 4000 });
+    return net;
+  };
+
+  it("fills the dots, the angle, the count and the depth for review, and lays nothing by itself", async () => {
+    const net = await ready(serve());
+    fireEvent.click(screen.getByTestId("lay-ai"));
+    await screen.findByTestId("lay-ai-note");
+    expect(screen.getByTestId("lay-ai-note").textContent).toMatch(/Proposed 4 bays at 62° with 3 dots \(gemini-test\)/);
+    expect((screen.getByTestId("lay-count") as HTMLInputElement).value).toBe("4");
+    expect((screen.getByTestId("lay-angle") as HTMLInputElement).value).toBe("62.4");
+    expect((screen.getByTestId("lay-depth") as HTMLInputElement).value).toBe("5.2");
+    expect(screen.getAllByTestId("lay-dot")).toHaveLength(3);
+    expect(screen.getAllByTestId("lay-dot-mark")).toHaveLength(3); // drawn on the picture
+    expect((screen.getAllByTestId("lay-dot-place")[1] as HTMLSelectElement).value).toBe("back");
+    expect(screen.getByTestId("lay-ai-result").textContent).toMatch(/angles spread/);
+    expect(net.calls.filter((c) => c.url.endsWith("/auto-calibrate")).length).toBe(1);
+    expect(net.calls.some((c) => c.url.endsWith("/zones/1/layout"))).toBe(false); // the user presses "Fit the row to the dots"
+    fireEvent.click(screen.getByTestId("lay-fit-dots"));
+    await waitFor(() => expect(screen.getAllByTestId("zone-bay-row")).toHaveLength(4));
+    const req = net.calls.filter((c) => c.url.endsWith("/zones/1/layout")).at(-1)!.body!;
+    expect(req).toMatchObject({ mode: "dots", count: 4, stall_angle: 62.4, depth: 5.2, dots: [{ x: 0.2, y: 0.8, index: 0, at: "front" }, { x: 0.25, y: 0.5, index: 0, at: "back" }, { x: 0.4, y: 0.8, index: 1, at: "front" }] });
+  });
+
+  it("says why when the proposal was refused or no key is set, and keeps the form and dots as they were", async () => {
+    for (const ai of ["refused", "nokey"] as const) {
+      cleanup();
+      await ready(serve({ ai }));
+      fireEvent.change(screen.getByTestId("lay-count"), { target: { value: "7" } });
+      fireEvent.click(screen.getByTestId("lay-ai"));
+      await waitFor(() => expect(screen.getByText(ai === "refused" ? /bay width 3\.9 m is not a parking bay/ : /GEMINI_API_KEY/)).toBeTruthy());
+      expect((screen.getByTestId("lay-count") as HTMLInputElement).value).toBe("7");
+      expect(screen.queryByTestId("lay-ai-note")).toBeNull();
+      expect(screen.queryAllByTestId("lay-dot")).toHaveLength(0);
+    }
   });
 });
