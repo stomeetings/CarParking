@@ -10,8 +10,8 @@
       (function () {
         try {
           var t = localStorage.getItem("carparking.theme");
-          if (t !== "light" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-          if (t === "dark") document.documentElement.classList.add("dark");
+          if (t !== "light" && t !== "semi" && t !== "dark") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          if (t === "dark" || t === "semi") document.documentElement.classList.add(t);
         } catch (e) {}
       })();
     </script>

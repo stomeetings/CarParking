@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, CarFront, Cctv, Eye, FileCode2, FlaskConical, History, KeyRound, LayoutDashboard, Menu, Moon, PenTool, Ruler, Settings2, ShieldCheck, Sun } from "lucide-react";
+import { BarChart3, CarFront, Cctv, Eye, FileCode2, FlaskConical, History, KeyRound, LayoutDashboard, Menu, Moon, PenTool, Ruler, Settings2, ShieldCheck, Sun, SunMoon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Link } from "../hooks";
 import { useTheme } from "../theme";
@@ -25,7 +25,7 @@ export function Sidebar({ page, open, onNavigate, onClose }: {
   onClose: () => void;
 }) {
   const body = (
-    <aside className="flex h-full w-64 flex-col border-r border-line bg-surface">
+    <aside data-sidebar className="flex h-full w-64 flex-col border-r border-line bg-surface">
       <div className="flex h-14 items-center gap-2.5 border-b border-line px-5">
         <span className="flex items-center justify-center rounded-xl border border-primary/25 bg-primary/15 p-2 text-primary"><CarFront size={20} strokeWidth={1.75} aria-hidden="true" /></span>
         <span className="text-base font-semibold tracking-tight text-ink">Smart Parking</span>
@@ -70,7 +70,9 @@ export function Sidebar({ page, open, onNavigate, onClose }: {
 /** Light / dark switch: remembered in localStorage, the system preference until the first click. */
 function ThemeToggle() {
   const [theme, toggle] = useTheme();
-  return <IconButton icon={theme === "dark" ? Sun : Moon} label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} onClick={toggle} data-testid="theme-toggle" />;
+  const [icon, label] = theme === "light" ? [Sun, "Theme: light. Click for semi-dark (dark sidebar)"] as const
+    : theme === "semi" ? [SunMoon, "Theme: semi-dark. Click for dark"] as const : [Moon, "Theme: dark. Click for light"] as const;
+  return <IconButton icon={icon} label={label} onClick={toggle} data-testid="theme-toggle" />;
 }
 
 export function WorkerBadge({ live, link }: { live: StateMessage | null; link: Link }) {

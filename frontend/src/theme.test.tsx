@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Sidebar } from "./components/Layout";
-import { initialTheme, THEME_KEY, useTheme } from "./theme";
+import { initialTheme, nextTheme, THEME_KEY, useTheme } from "./theme";
 
 function Probe() {
   const [t, toggle] = useTheme();
@@ -21,12 +21,19 @@ describe("theme", () => {
   it("toggling flips the class on <html> and is remembered", () => {
     render(<Probe />);
     expect(document.documentElement.classList.contains("dark")).toBe(false);
-    act(() => screen.getByTestId("probe").click());
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
-    act(() => screen.getByTestId("probe").click());
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+    const root = document.documentElement.classList;
+    act(() => screen.getByTestId("probe").click()); // light -> semi
+    expect([root.contains("semi"), root.contains("dark"), localStorage.getItem(THEME_KEY)]).toEqual([true, false, "semi"]);
+    act(() => screen.getByTestId("probe").click()); // semi -> dark
+    expect([root.contains("semi"), root.contains("dark"), localStorage.getItem(THEME_KEY)]).toEqual([false, true, "dark"]);
+    act(() => screen.getByTestId("probe").click()); // dark -> light
+    expect([root.contains("semi"), root.contains("dark"), localStorage.getItem(THEME_KEY)]).toEqual([false, false, "light"]);
+  });
+
+  it("restores a saved semi theme and cycles light -> semi -> dark -> light", () => {
+    localStorage.setItem(THEME_KEY, "semi");
+    expect(initialTheme()).toBe("semi");
+    expect([nextTheme("light"), nextTheme("semi"), nextTheme("dark")]).toEqual(["semi", "dark", "light"]);
   });
 
   it("marks the active sidebar item as the current page", () => {
