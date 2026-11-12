@@ -130,7 +130,7 @@ and the camera falls back to the legacy snapshot until a new calibration is acce
 A check that cannot be judged (night, glare, other light, too few or badly spread matches) is *inconclusive* and never an alarm: the
 guard then simply cannot vouch for the calibration. Versions made before the guard have no stored reference: the first frame the worker
 sees after loading becomes the baseline (weaker, labelled). Tuned on real frames of the live camera (see ACTIVITY_LOG item 82).
-Tunables: `CARPARK_DRIFT_EVERY` (30 s), `CARPARK_DRIFT_CONFIRM` (3).
+Tunables: `CARPARK_DRIFT_EVERY` (30 s), `CARPARK_DRIFT_CONFIRM` (10), `CARPARK_DRIFT_GUARD` (off by default; the dashboard's Settings switch "Camera Drift Guard" turns the checks on or off live, without touching the active version).
 
 **History.** The same stores (SQLite per camera / PostgreSQL) keep the calibration's lifecycle (`draft`, `activated` with the
 version it replaced and whether it was a rollback, `stale` with the reason, `discarded`, `drift_suspected`, `drift_cleared`), written in

@@ -711,6 +711,22 @@ def test_websocket_carries_notices_to_the_ticker_and_events_default_stays_moveme
     assert [e["event"] for e in client.get("/api/events?kinds=notices").json()] == ["encroached"]
 
 
+def test_the_drift_guard_is_a_worker_option_off_by_default(client, env):
+    values = client.get("/api/settings").json()["values"]
+    assert values["drift_guard"] is False  # off until switched on (CARPARK_DRIFT_GUARD unset)
+    assert client.put("/api/settings", json={"drift_guard": True}).status_code == 401
+    assert client.put("/api/settings", headers=AUTH, json={"drift_guard": "maybe"}).status_code == 422
+    store = LiveStore(env["CARPARK_HISTORY_DB"])
+    r = client.put("/api/settings", headers=AUTH, json={"drift_guard": True})
+    assert r.status_code == 200 and r.json()["values"]["drift_guard"] is True and r.json()["values"]["spillage"] is False
+    assert r.json()["version"] == 0 and stored(env)[1] == 0  # a worker option: the shared settings and their version are untouched
+    assert store.option("drift_guard") == "1"
+    r = client.put("/api/settings", headers=AUTH, json={"drift_guard": False})
+    assert r.json()["values"]["drift_guard"] is False and store.option("drift_guard") == "0"
+    saved = stored(env)[0]
+    assert saved is None or ("drift_guard" not in saved["ui"] and "drift_guard" not in saved["run"])
+
+
 def test_blocked_objects_is_a_worker_option_off_by_default(client, env):
     values = client.get("/api/settings").json()["values"]
     assert values["blocked_objects"] is False

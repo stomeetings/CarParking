@@ -26,8 +26,9 @@ the worker (both read it). The `setup` service gets no `.env` (no tokens, no cam
 |---|---|---|
 | `CARPARK_GEOMETRY_ENABLED` | off. Only `1`/`true`/`yes`/`on` switch it on | the one switch: setup / re-anchor / history endpoints (else 503), the worker's metric feed, drift guard, history samples, the SPA metric views |
 | `CARPARK_SETUP_URL` | `http://setup:8100` | where the api reaches the on-demand setup service (compose network) |
+| `CARPARK_DRIFT_GUARD` | off. Only `1`/`on`/`true`/`yes` switch it on | the drift checks' default while the dashboard's Settings switch ("Camera Drift Guard", worker option `drift_guard`, applied live) was never set. Off: the worker never stales a calibration (no checks, no drift events); the active version, its bays, the metrics and the history are untouched |
 | `CARPARK_DRIFT_EVERY` | 30 (seconds) | how often the worker checks the camera did not move |
-| `CARPARK_DRIFT_CONFIRM` | 3 | confirmed checks in a row that mark a calibration stale |
+| `CARPARK_DRIFT_CONFIRM` | 10 (was 3 until 12 Nov 2026) | confirmed checks in a row that mark a calibration stale (10 × 30 s = 5 minutes of continuous drift; 3 staled Camera 1 on 16 px of morning-light sway at the 15 px threshold) |
 
 Fixed in code (not env): drift threshold 0.6 % of the picture width (about 11 px at 1920), history samples once a minute and on a change,
 kept 90 days, events 1 year, the worker re-reads the active calibration every 5 s.

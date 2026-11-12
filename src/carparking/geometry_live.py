@@ -11,7 +11,11 @@ Two more jobs, both on the worker's own frames and both fail-safe:
   * the DRIFT GUARD: every DRIFT_EVERY seconds the current frame's static background is compared with the reference stored
     with the calibration (carparking/geometry/drift.py). A shift confirmed on DRIFT_CONFIRM checks in a row marks the active
     version STALE (an event in the history) and the camera falls back to the legacy snapshot until a new calibration is
-    accepted. An inconclusive check (night, glare, a blocked view) is never an alarm.
+    accepted. An inconclusive check (night, glare, a blocked view) is never an alarm. The guard is OFF by default (since
+    12 Nov 2026: it staled Camera 1 on 16 px of morning-light sway): the dashboard's Settings switch (worker option
+    "drift_guard", live.py _drift_guard, applied on the next frame) turns it on or off; CARPARK_DRIFT_GUARD=1 makes "on" the
+    default while no switch was ever set. Off: no checks, no events, nothing ever staled; metrics, the history and the active
+    version go on untouched. CARPARK_DRIFT_EVERY / CARPARK_DRIFT_CONFIRM tune it.
   * HISTORY: an occupancy sample (capacity / occupied / vehicles) is stored every SAMPLE_EVERY seconds, and at once when
     the occupancy changes (at most one per SAMPLE_MIN_GAP), old rows pruned hourly (GeometryStore.add_sample / prune_history).
 
@@ -38,7 +42,15 @@ STALE_AFTER = 60.0  # seconds a failing store keeps serving the last good calibr
 MAX_DIST = 6.0  # metres: nearer than this a distance is worth drawing
 SAME_CAR = 1.0  # metres: two footprints with centres this close are one car seen twice (whole frame + zoom detection)
 DRIFT_EVERY = 30.0  # seconds between drift checks (one ORB pass + match: ~30 ms)
-DRIFT_CONFIRM = 3  # consecutive "drift" checks before a version is marked stale (a passing truck or a gust is not a bump)
+DRIFT_CONFIRM = 10  # consecutive "drift" checks (~5 min at DRIFT_EVERY) before a version is marked stale: a passing truck, a gust or a
+# camera that sways across the threshold in the morning light is not a bump (3 staled Camera 1 on 16 px of jitter, 12 Nov 2026)
+DRIFT_GUARD_OFF = ("", "0", "off", "false", "no")  # CARPARK_DRIFT_GUARD / option "drift_guard" values that mean off (the default)
+
+
+def drift_guard_wanted(env) -> bool:
+    """The drift guard's default for this deployment: CARPARK_DRIFT_GUARD (off unless 1 / on / true / yes). The dashboard's Settings
+    switch (worker option "drift_guard") overrides it once set."""
+    return (env.get("CARPARK_DRIFT_GUARD") or "").strip().lower() not in DRIFT_GUARD_OFF
 STRIKE_TTL = 10  # a strike older than this many check intervals is forgotten (inconclusive nights do not carry it over)
 SAMPLE_EVERY = 60.0  # seconds between occupancy samples
 SAMPLE_MIN_GAP = 10.0  # ... and the shortest gap when the occupancy changes in between
@@ -230,9 +242,11 @@ class GeometryFeed:
     poll: PostgreSQL connects per call, SQLite reuses the worker's connection). Single-threaded, like the worker."""
 
     def __init__(self, open_store, camera_id: str, poll: float = POLL, clock=time.time, log=print,
-                 drift_every: float = DRIFT_EVERY, drift_confirm: int = DRIFT_CONFIRM, sample_every: float = SAMPLE_EVERY):
+                 drift_every: float = DRIFT_EVERY, drift_confirm: int = DRIFT_CONFIRM, sample_every: float = SAMPLE_EVERY,
+                 drift_guard: bool = True):
         self.open_store, self.camera_id, self.poll, self.clock, self.log = open_store, camera_id, poll, clock, log
         self.drift_every, self.drift_confirm, self.sample_every = drift_every, max(1, int(drift_confirm)), sample_every
+        self.drift_guard = bool(drift_guard)  # False: observe() does nothing (no checks, no events, nothing staled)
         self.active: ActiveGeometry | None = None
         self.errors = 0
         self._checked = -np.inf
@@ -289,11 +303,12 @@ class GeometryFeed:
     def observe(self, frame, detections: list[dict], now: float | None = None):
         """Called with every processed frame (cheap unless a check is due): the drift guard. Compares the frame's static
         background with the active calibration's reference every DRIFT_EVERY seconds; DRIFT_CONFIRM "drift" results in a row
-        mark the version stale (the camera then counts as uncalibrated). Never raises."""
+        mark the version stale (the camera then counts as uncalibrated). Switched off (drift_guard=False): only the refresh.
+        Never raises."""
         now = self.clock() if now is None else now
         try:
             g = self.refresh(now)
-            if g is None or frame is None or now - self._drift_at < self.drift_every:
+            if g is None or frame is None or not self.drift_guard or now - self._drift_at < self.drift_every:
                 return
             self._drift_at = now
             h, w = frame.shape[:2]
@@ -544,6 +559,10 @@ def feed_from_env(env, store, log=print) -> GeometryFeed | None:
         every, confirm = num("CARPARK_DRIFT_EVERY", DRIFT_EVERY), int(num("CARPARK_DRIFT_CONFIRM", DRIFT_CONFIRM))
     except ValueError:
         every, confirm = DRIFT_EVERY, DRIFT_CONFIRM
-    log(f"geometry: reading the active calibration of camera {camera!r} every {POLL:.0f} s; drift check every {every:.0f} s "
-        f"(stale after {confirm} in a row), occupancy history every {SAMPLE_EVERY:.0f} s")
-    return GeometryFeed(lambda: open_geometry(store, camera, env), camera, log=log, drift_every=every, drift_confirm=confirm)
+    guard = drift_guard_wanted(env)
+    log(f"geometry: reading the active calibration of camera {camera!r} every {POLL:.0f} s; "
+        + (f"drift check every {every:.0f} s (stale after {confirm} in a row)" if guard else
+           "drift guard OFF by default (the Settings switch or CARPARK_DRIFT_GUARD=1 turns it on): the calibration is never staled by the worker")
+        + f", occupancy history every {SAMPLE_EVERY:.0f} s")
+    return GeometryFeed(lambda: open_geometry(store, camera, env), camera, log=log, drift_every=every, drift_confirm=confirm,
+                        drift_guard=guard)

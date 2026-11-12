@@ -235,6 +235,7 @@ export interface SettingsValues {
   spillage?: boolean; // a free bay a neighbour's vehicle stands on is ENCROACHED, not counted free
   blocked_objects?: boolean; // a free bay with a potted plant, vase, box ... in it is BLOCKED, not counted free
   obstacle_filter?: boolean; // cones, people, shadows and other clutter do not make a bay BUSY
+  drift_guard?: boolean; // the worker checks the picture against the active calibration and stales it on a confirmed camera move (off by default)
   // counting thresholds of the shown state (Dynamic mode; worker options, applied live): shares 0..1
   hidden_ground: number; // vehicles in front cover more of a free slot's ground: UNKNOWN (default 0.8)
   ground_share: number; // a vehicle covers more of a free slot's ground: not FREE (default 0.4)

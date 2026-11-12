@@ -93,6 +93,21 @@ describe("Parking protection switches in the Settings drawer", () => {
     expect(sw("spillage-switch").getAttribute("aria-checked")).toBe("true"); // still on, and not re-sent
   });
 
+  it("the camera drift guard is a fourth switch, off by default, sent alone on Apply", async () => {
+    const puts: Record<string, unknown>[] = [];
+    serve(puts);
+    drawer();
+    await screen.findByTestId("drift-switch");
+    expect(screen.getByText("Camera Drift Guard")).toBeTruthy();
+    expect(sw("drift-switch").getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByText(/nothing is ever marked stale/)).toBeTruthy();
+    fireEvent.click(sw("drift-switch"));
+    fireEvent.click(screen.getByText("Apply"));
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({ drift_guard: true, version: 3 });
+    await waitFor(() => expect(sw("drift-switch").getAttribute("aria-checked")).toBe("true"));
+  });
+
   it("shows what the worker runs with (stored on) and switching one off sends false", async () => {
     const puts: Record<string, unknown>[] = [];
     serve(puts, { spillage: true, obstacle_filter: true });

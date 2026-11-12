@@ -72,6 +72,7 @@ from pydantic import BaseModel, Field
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from carparking.geometry_live import DRIFT_GUARD_OFF, drift_guard_wanted  # noqa: E402
 from carparking.geometry_store import geometry_enabled  # noqa: E402
 from carparking.history import DISPLAY_TUNING, MOVES, NOTICES, HistoryDB, tuning_values  # noqa: E402
 from carparking.history_pg import PgHistory, Scope, SqliteHistory, sqlite_counts  # noqa: E402
@@ -227,6 +228,10 @@ class SettingsPatch(BaseModel):
     # blocked by object (blocked.py): a free bay with a potted plant, vase, box ... in it is BLOCKED (free for the history, not counted free):
     # a worker option too, off by default, applied on the worker's next frame
     blocked_objects: bool | None = None
+    # the camera drift guard (geometry_live: the worker checks the static background against the active calibration and stales it on a
+    # confirmed move): a worker option, off by default (CARPARK_DRIFT_GUARD sets the default), applied on the worker's next frame; the
+    # active calibration version is never touched by this switch
+    drift_guard: bool | None = None
     # display thresholds of the shown state (history.DISPLAY_TUNING; a worker option like model_variant, not part of
     # the page-shared settings): what counts as FREE / BUSY / UNKNOWN, never the slot map or the history
     hidden_ground: float | None = Field(None, ge=DISPLAY_TUNING["hidden_ground"][1], le=DISPLAY_TUNING["hidden_ground"][2])
@@ -545,6 +550,8 @@ def create_app(cfg: Config | None = None, names_of=class_names, http: httpx.Asyn
             values["model_variant"] = store.option("model_variant", "auto")
             values.update(stored_tuning(store))
             values.update({k: store.option(k, "0") not in ("", "0") for k in ("spillage", "obstacle_filter", "blocked_objects")})
+            guard = (store.option("drift_guard", "") or "").strip().lower()  # unset: the deployment's default (CARPARK_DRIFT_GUARD, off)
+            values["drift_guard"] = drift_guard_wanted(cfg.env) if guard == "" else guard not in DRIFT_GUARD_OFF
         effective = {**run, "custom_url": values["custom_url"]}
         return {"version": ver, "values": values, "effective": effective, "fixed_slots": run["fixed"],
                 "cam": c.camera.id if c.camera else None}
@@ -610,10 +617,9 @@ def create_app(cfg: Config | None = None, names_of=class_names, http: httpx.Asyn
         if variant is not None:  # the worker reads it every second and swaps the detector on the next frame
             with opened(LiveStore, c.db) as store:
                 store.set_option("model_variant", variant)
-        switches = {k: changes.pop(k) for k in ("spillage", "obstacle_filter", "blocked_objects") if changes.get(k) is not None}
-        changes.pop("spillage", None)
-        changes.pop("obstacle_filter", None)
-        changes.pop("blocked_objects", None)
+        switches = {k: changes.pop(k) for k in ("spillage", "obstacle_filter", "blocked_objects", "drift_guard") if changes.get(k) is not None}
+        for k in ("spillage", "obstacle_filter", "blocked_objects", "drift_guard"):
+            changes.pop(k, None)
         if switches:
             with opened(LiveStore, c.db) as store:
                 for k, on in switches.items():

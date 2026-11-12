@@ -213,7 +213,61 @@ def test_drift_settings_come_from_the_environment():
     feed = feed_from_env({**on, "CARPARK_DRIFT_EVERY": "5", "CARPARK_DRIFT_CONFIRM": "2"}, object(), log=lambda m: None)
     assert (feed.drift_every, feed.drift_confirm) == (5.0, 2)
     bad = feed_from_env({**on, "CARPARK_DRIFT_EVERY": "soon"}, object(), log=lambda m: None)
-    assert (bad.drift_every, bad.drift_confirm) == (30.0, 3)  # a typo falls back to the defaults, never a crash
+    assert (bad.drift_every, bad.drift_confirm, bad.drift_guard) == (30.0, 10, False)  # a typo falls back to the defaults, never a crash
+    logs = []
+    off = feed_from_env(on, object(), log=logs.append)
+    assert off.drift_guard is False and any("drift guard OFF by default" in m for m in logs)  # off unless asked for
+    for value in ("0", "off", "False", " no "):
+        assert feed_from_env({**on, "CARPARK_DRIFT_GUARD": value}, object(), log=lambda m: None).drift_guard is False
+    for value in ("1", "on", "TRUE", "yes"):
+        assert feed_from_env({**on, "CARPARK_DRIFT_GUARD": value}, object(), log=lambda m: None).drift_guard is True
+    assert GeometryFeed(lambda: None, "c").drift_guard is True  # the class itself guards unless told otherwise (tests, library use)
+
+
+def test_the_settings_switch_turns_the_guard_on_and_off_while_the_worker_runs(tmp_path):
+    from test_live import Clock as WorkerClock
+    from test_live import make_worker, run_cfg, steps
+
+    class Spy:
+        drift_guard = False  # what the environment said at start (off by default)
+
+        def observe(self, frame, detections, now):
+            pass
+
+        def metrics(self, detections, shape, now):
+            return None
+
+    store, clock = LiveStore(tmp_path / "h.db"), WorkerClock()
+    store.set_config({"enabled": True, "run": run_cfg()})
+    spy = Spy()
+    (tmp_path / "w").mkdir()
+    w, _, _ = make_worker(tmp_path / "w", store, clock, geometry=spy)
+    steps(w, clock, 1)
+    assert spy.drift_guard is False  # no switch ever set: the environment's default stands
+    store.set_option("drift_guard", "1")  # the dashboard's Settings: on
+    steps(w, clock, 1)
+    assert spy.drift_guard is True
+    store.set_option("drift_guard", "0")
+    steps(w, clock, 1)
+    assert spy.drift_guard is False
+    store.set_option("drift_guard", "")  # cleared: back to the environment's default
+    spy.drift_guard = True
+    steps(w, clock, 1)
+    assert spy.drift_guard is False
+
+
+def test_with_the_guard_off_a_moved_camera_is_never_staled_and_nothing_is_logged(store):
+    clock = Clock()
+    feed, logs = drift_feed(store, clock, drift_guard=False)
+    moved = warp(scene(), 28, 0)
+    assert feed.metrics(cars_dets(), [W, H], clock())["drift_guard"] is True  # the calibration has a reference: only the checks are off
+    for _ in range(12):  # four times the default confirmation window of a moved picture
+        assert look(feed, clock, moved) is None  # no check, nothing published
+    g = store.geometry("cam-1")
+    assert g.active_version() == 1 and g.get(1)["state"] == "active"
+    assert [e["kind"] for e in g.events(limit=50)] == ["activated", "draft"]  # no drift_suspected, no stale
+    assert feed.metrics(cars_dets(), [W, H], clock()) is not None and not any("STALE" in m for m in logs)
+    assert feed.refresh(clock()).version == 1  # the active version is still read (an activation from the setup page is seen)
 
 
 def test_the_worker_hands_every_frame_to_the_guard_and_a_failing_guard_costs_no_frame(tmp_path, capsys):

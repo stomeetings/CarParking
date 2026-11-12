@@ -229,7 +229,7 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
                   </>
                 ))}
 
-                {group("protect", <ShieldCheck size={16} />, "Advanced Smart Protections", "Spillage, the non-vehicle filter and blocked-by-object detection (off by default)", (
+                {group("protect", <ShieldCheck size={16} />, "Advanced Smart Protections", "Spillage, the non-vehicle filter, blocked-by-object detection and the camera drift guard (off by default)", (
                   <>
                     <div data-testid="spillage-switch">
                       <Toggle checked={!!draft.spillage} onChange={(v) => set("spillage", v)} label="Spillage Protection" />
@@ -254,8 +254,17 @@ export function SettingsDrawer({ open, onClose, onNeedAdmin, tokenKey, codeStale
                       Boxes the detector calls a vehicle that are too small for the bay, the wrong shape, cone-orange or a flat shadow
                       do not make a bay BUSY (a bay that is already BUSY is never affected). The Worker card lists what was dropped.
                     </p>
+                    <div data-testid="drift-switch">
+                      <Toggle checked={!!draft.drift_guard} onChange={(v) => set("drift_guard", v)} label="Camera Drift Guard" />
+                    </div>
                     <p className="text-xs text-muted">
-                      Both are off by default, apply on the worker's next frame (no restart, no new settings version) and work on
+                      Every 30 s the worker compares the picture's static background with the active calibration; a shift confirmed on 10
+                      checks in a row marks the calibration stale and the camera falls back to learned slots. Off: no checks, nothing is ever
+                      marked stale; the calibration, its bays and the pins stay exactly as they are. If the camera really is bumped, re-anchor
+                      it from Camera setup.
+                    </p>
+                    <p className="text-xs text-muted">
+                      All four are off by default, apply on the worker's next frame (no restart, no new settings version) and work on
                       fixed maps and the auto grid.
                     </p>
 
@@ -491,7 +500,7 @@ const GROUP_KEYS: Record<string, (keyof SettingsValues)[]> = {
   general: ["enabled", "stream", "custom_url"],
   ai: ["model_variant", "conf"],
   timing: ["hold", "exit_hold", "exit_frames", "occlusion", "hidden_max"],
-  protect: ["spillage", "obstacle_filter", "blocked_objects"],
+  protect: ["spillage", "obstacle_filter", "blocked_objects", "drift_guard"],
   counting: ["hidden_ground", "ground_share", "vehicle_iou", "bay_share", "pin_reach"],
   layout: ["cut_top", "cut_bottom", "cut_left", "cut_right", "roi"],
 };

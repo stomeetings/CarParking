@@ -613,6 +613,7 @@ class Worker:
         self.reader = self.db = self.mon = self.det = None
         self.holding = False
         self.geometry, self._geometry_error = geometry, ""
+        self._drift_env = bool(getattr(geometry, "drift_guard", False))  # the drift guard's default (environment) while no switch is set
         self.health_factory, self.health, self._stream_logged = health_factory, None, ACTIVE
         self.pulse = Pulse(store.path, self.owner, pulse_every, pulse_stall, self.clock) if pulse_every > 0 else None
         # (calibration version, slot count, operator input as stored) of the auto grid the monitor runs on, else None: any change
@@ -715,6 +716,16 @@ class Worker:
         if mode != "off" and getattr(tracker, "spillage", 0) and self.geometry is not None and hasattr(self.geometry, "camera"):
             cam = self.geometry.camera([frame.shape[1], frame.shape[0]], now)
         tracker.ground_cam, tracker.ground_mode = cam, ("union" if mode == "union" else "auto")
+
+    def _drift_guard(self):
+        """The camera drift guard (geometry_live.GeometryFeed.drift_guard) follows the option "drift_guard" set from the dashboard's
+        Settings ("1" on, "0" off), applied on the next frame like _spillage(); while no switch was ever set the environment's default
+        stands (CARPARK_DRIFT_GUARD, off by default). Only the checks: the active calibration is never touched here."""
+        feed = self.geometry
+        if feed is None or not hasattr(feed, "drift_guard"):
+            return
+        opt = (self.store.option("drift_guard", "") or "").strip().lower()
+        feed.drift_guard = self._drift_env if opt == "" else opt not in ("0", "off", "false", "no")  # (geometry_live.DRIFT_GUARD_OFF; not imported: opt-in module)
 
     def _obstacle_filter(self):
         """The non-vehicle filter (obstacle_filter.py; post-demo item 2) follows the option "obstacle_filter" ("0" = off, the default),
@@ -824,6 +835,7 @@ class Worker:
         self._blocked()
         self._ground(frame, now)
         self._obstacle_filter()
+        self._drift_guard()
         res = self.mon.process(frame, t)  # capture time, not the time inference finished
         self.logged += sum(e["logged"] for e in res.events)
         self._watch_sessions()
